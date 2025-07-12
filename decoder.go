@@ -63,118 +63,110 @@ func ParseAnyFromFileAsJSON(f string) (interface{}, error) {
 	// Check if the path is a directory
 	fileInfo, err := os.Stat(f)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to stat file %s: %w", f, err)
 	}
 
-	// If it's a directory, check if it's a Minecraft world save
+	// If it's a directory, we don't support it
 	if fileInfo.IsDir() {
-		// Check if it has level.dat and region directory
-		levelDatPath := f + "/level.dat"
-		regionDirPath := f + "/region"
-
-		_, levelDatErr := os.Stat(levelDatPath)
-		regionDirInfo, regionDirErr := os.Stat(regionDirPath)
-
-		if levelDatErr == nil && regionDirErr == nil && regionDirInfo.IsDir() {
-			// It's a Minecraft world save, process it
-			return decodeWorldSave(f)
-		}
+		return nil, fmt.Errorf("directories are not supported: %s", f)
 	}
 
-	// If it's not a directory or not a Minecraft world save, process it as a file
-	r, err := os.OpenFile(f, os.O_RDONLY, 0755)
+	// Read the file
+	data, err := os.ReadFile(f)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read file %s: %w", f, err)
 	}
-	defer r.Close()
 
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
+	// Decode the data
 	res, err := decodeAny(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode file %s: %w", f, err)
 	}
+
 	return res, nil
 }
 
 func Decode(r io.Reader) ([]NbtBlock, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read data: %w", err)
 	}
 
 	schematic, err := decodeSchematic(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode schematic: %w", err)
 	}
 
-	nbtSlice := make([]NbtBlock, 0)
+	// Pre-allocate slices with capacity to reduce reallocations
+	nbtSlice := make([]NbtBlock, 0, len(schematic.Blocks)/4) // Estimate that ~25% of blocks have NBT data
 
-	paletteSlice := make([]NbtBlock, 0, len(schematic.Palette))
-	for _, tag := range schematic.Palette {
-		paletteSlice = append(paletteSlice, NbtBlock{Name: tag.Name})
+	// Initialize palette slice with names
+	paletteSlice := make([]NbtBlock, len(schematic.Palette))
+	for i, tag := range schematic.Palette {
+		paletteSlice[i] = NbtBlock{Name: tag.Name}
 	}
 
+	// Process blocks
 	for _, tag := range schematic.Blocks {
+		// Increment block count in palette
+		if tag.State >= 0 && tag.State < len(paletteSlice) {
+			paletteSlice[tag.State].Count++
+		}
 
+		// Process NBT data if present
 		if tag.Nbt != nil {
 			n, err := decodeNbt(tag.Nbt)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to decode NBT data: %w", err)
 			}
-			if n != nil {
+			if n != nil && n.Item.ID != "" {
 				nbtSlice = append(nbtSlice, NbtBlock{
 					Name:  n.Item.ID,
 					Count: n.Item.Count,
 				})
 			}
 		}
-
-		// Blockstate refers to palette to get type of block
-		paletteSlice[tag.State].Count += 1
 	}
 
-	aggr := make([]NbtBlock, 0, len(paletteSlice))
+	// Use a map to aggregate blocks by name for better performance
+	blockCounts := make(map[string]int)
+
+	// Add palette blocks to the map
 	for _, ps := range paletteSlice {
-		found := false
-		for i, a := range aggr {
-			if a.Name == ps.Name {
-				found = true
-				aggr[i].Count += ps.Count
-			}
-		}
-		if !found && ps.Name != "" {
-			aggr = append(aggr, ps)
+		if ps.Name != "" {
+			blockCounts[ps.Name] += ps.Count
 		}
 	}
 
+	// Add NBT blocks to the map
 	for _, ns := range nbtSlice {
-		found := false
-		for i, a := range aggr {
-			if a.Name == ns.Name {
-				found = true
-				aggr[i].Count += ns.Count
-			}
+		if ns.Name != "" {
+			blockCounts[ns.Name] += ns.Count
 		}
-		if !found && ns.Name != "" {
-			aggr = append(aggr, ns)
-		}
+	}
+
+	// Convert map to slice
+	aggr := make([]NbtBlock, 0, len(blockCounts))
+	for name, count := range blockCounts {
+		aggr = append(aggr, NbtBlock{
+			Name:  name,
+			Count: count,
+		})
 	}
 
 	return aggr, nil
 }
 
 func decodeSchematic(data []byte) (*NbtSchematic, error) {
-	r, err := gzip.NewReader(bytes.NewReader(data[:]))
+	r, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
+	defer r.Close()
 
 	schematic := new(NbtSchematic)
 	if _, err = nbt.NewDecoder(r).Decode(schematic); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode schematic: %w", err)
 	}
 	return schematic, nil
 }
@@ -182,19 +174,22 @@ func decodeSchematic(data []byte) (*NbtSchematic, error) {
 func decodeRegion(f string) error {
 	r, err := region.Open(f)
 	if err != nil {
-		return fmt.Errorf("failed to open region file: %w", err)
+		return fmt.Errorf("failed to open region file %s: %w", f, err)
 	}
 	defer r.Close()
 
+	// Process all sectors in the region file
 	for i := 0; i < 32; i++ {
 		for j := 0; j < 32; j++ {
+			// Skip non-existent sectors
 			if !r.ExistSector(i, j) {
 				continue
 			}
 
+			// Read sector data
 			data, err := r.ReadSector(i, j)
 			if err != nil {
-				log.Printf("Warning: Failed to read sector (%d,%d): %v", i, j, err)
+				log.Printf("Warning: Failed to read sector (%d,%d) in %s: %v", i, j, f, err)
 				continue
 			}
 
@@ -203,18 +198,21 @@ func decodeRegion(f string) error {
 				continue
 			}
 
+			// Decode the sector data
 			dd, err := decodeAny(data)
 			if err != nil {
-				log.Printf("Warning: Failed to decode sector (%d,%d): %v", i, j, err)
+				log.Printf("Warning: Failed to decode sector (%d,%d) in %s: %v", i, j, f, err)
 				continue
 			}
 
-			marshal, err := json.MarshalIndent(dd, "", "	")
+			// Marshal the decoded data to JSON
+			marshal, err := json.MarshalIndent(dd, "", "  ")
 			if err != nil {
-				log.Printf("Warning: Failed to marshal JSON for sector (%d,%d): %v", i, j, err)
+				log.Printf("Warning: Failed to marshal JSON for sector (%d,%d) in %s: %v", i, j, f, err)
 				continue
 			}
 
+			// Print the JSON data
 			log.Println(string(marshal))
 		}
 	}
@@ -229,28 +227,27 @@ func decodeAny(data []byte) (interface{}, error) {
 	var r io.Reader
 	var err error
 
-	// Try different decompression methods
-	if data[0] == 1 {
-		// GZIP compression
-		r, err = gzip.NewReader(bytes.NewReader(data[1:]))
-	} else if data[0] == 2 {
-		// ZLIB compression
-		r, err = zlib.NewReader(bytes.NewReader(data[1:]))
-	} else if data[0] == 0x1f && len(data) > 1 && data[1] == 0x8b {
-		// GZIP magic number
-		r, err = gzip.NewReader(bytes.NewReader(data))
-	} else {
-		// Try to detect compression type
-		if len(data) > 1 && data[0] == 0x1f && data[1] == 0x8b {
+	// Try different decompression methods based on magic numbers or format indicators
+	if len(data) > 1 {
+		if data[0] == 1 {
+			// GZIP compression with format indicator
+			r, err = gzip.NewReader(bytes.NewReader(data[1:]))
+		} else if data[0] == 2 {
+			// ZLIB compression with format indicator
+			r, err = zlib.NewReader(bytes.NewReader(data[1:]))
+		} else if data[0] == 0x1f && data[1] == 0x8b {
 			// GZIP magic number
 			r, err = gzip.NewReader(bytes.NewReader(data))
-		} else if len(data) > 1 && data[0] == 0x78 && (data[1] == 0x01 || data[1] == 0x9c || data[1] == 0xda) {
+		} else if data[0] == 0x78 && (data[1] == 0x01 || data[1] == 0x9c || data[1] == 0xda) {
 			// ZLIB magic number
 			r, err = zlib.NewReader(bytes.NewReader(data))
 		} else {
 			// Assume uncompressed
 			r = bytes.NewReader(data)
 		}
+	} else {
+		// Single byte data, assume uncompressed
+		r = bytes.NewReader(data)
 	}
 
 	if err != nil {
@@ -269,172 +266,45 @@ func decodeAny(data []byte) (interface{}, error) {
 }
 
 func decodeNbt(val interface{}) (*Nbt, error) {
-	if data, ok := val.([]byte); ok {
-		r, err := gzip.NewReader(bytes.NewReader(data[:]))
+	switch data := val.(type) {
+	case []byte:
+		r, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
+		defer r.Close()
 
 		n := new(Nbt)
 		if _, err = nbt.NewDecoder(r).Decode(n); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to decode NBT data: %w", err)
 		}
 		return n, nil
-	} else if data, ok := val.(map[string]interface{}); ok {
+
+	case map[string]interface{}:
 		marshal, err := json.Marshal(data)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to marshal map to JSON: %w", err)
 		}
+
 		n := new(Nbt)
-		err = json.Unmarshal(marshal, n)
-		if err != nil {
+		if err = json.Unmarshal(marshal, n); err != nil {
 			// Ignore error because we get weird nbt formats for inventories for example
-			log.Println("Skipping invalid NBT", string(marshal))
+			log.Println("Skipping invalid NBT:", string(marshal))
 			return nil, nil
-		} else {
-			return n, nil
 		}
+		return n, nil
 	}
+
 	return nil, errors.New("unknown type of nbt")
 }
 
+// must is a helper function that panics if err is not nil
+// It's useful for operations that should never fail in normal circumstances
 func must[T any](v T, err error) T {
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		// Print the error and exit with a non-zero status code
+		fmt.Fprintf(os.Stderr, "Fatal error: %v\n", err)
 		os.Exit(1)
 	}
 	return v
-}
-
-// decodeWorldSave processes a Minecraft world save directory and returns the data as JSON
-func decodeWorldSave(worldDir string) (interface{}, error) {
-	result := make(map[string]interface{})
-
-	// Process level.dat
-	levelDatPath := worldDir + "/level.dat"
-	levelDatFile, err := os.OpenFile(levelDatPath, os.O_RDONLY, 0755)
-	if err != nil {
-		return nil, err
-	}
-	defer levelDatFile.Close()
-
-	// level.dat is a gzipped NBT file
-	r, err := gzip.NewReader(levelDatFile)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-
-	// Decode level.dat
-	levelDat := new(interface{})
-	if _, err = nbt.NewDecoder(r).Decode(levelDat); err != nil {
-		return nil, err
-	}
-	result["level.dat"] = levelDat
-
-	// Process region files
-	regionDir := worldDir + "/region"
-	regionFiles, err := os.ReadDir(regionDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read region directory: %w", err)
-	}
-
-	regions := make(map[string]interface{})
-	for _, regionFile := range regionFiles {
-		if !regionFile.IsDir() && len(regionFile.Name()) > 4 && regionFile.Name()[0] == 'r' && regionFile.Name()[len(regionFile.Name())-4:] == ".mca" {
-			regionPath := regionDir + "/" + regionFile.Name()
-			r, err := region.Open(regionPath)
-			if err != nil {
-				log.Printf("Warning: Failed to open region file %s: %v", regionPath, err)
-				continue
-			}
-			defer r.Close()
-
-			chunks := make(map[string]interface{})
-			for i := 0; i < 32; i++ {
-				for j := 0; j < 32; j++ {
-					if !r.ExistSector(i, j) {
-						continue
-					}
-
-					data, err := r.ReadSector(i, j)
-					if err != nil {
-						log.Printf("Warning: Failed to read sector (%d,%d) in region file %s: %v", i, j, regionPath, err)
-						continue
-					}
-
-					// Skip empty data
-					if len(data) == 0 {
-						continue
-					}
-
-					chunk, err := decodeAny(data)
-					if err != nil {
-						log.Printf("Warning: Failed to decode sector (%d,%d) in region file %s: %v", i, j, regionPath, err)
-						continue
-					}
-
-					chunkKey := fmt.Sprintf("chunk_%d_%d", i, j)
-					chunks[chunkKey] = chunk
-				}
-			}
-			regions[regionFile.Name()] = chunks
-		}
-	}
-	result["regions"] = regions
-
-	// Process entities directory if it exists
-	entitiesDir := worldDir + "/entities"
-	if entitiesInfo, err := os.Stat(entitiesDir); err == nil && entitiesInfo.IsDir() {
-		entitiesFiles, err := os.ReadDir(entitiesDir)
-		if err != nil {
-			log.Printf("Warning: Failed to read entities directory: %v", err)
-		} else {
-			entities := make(map[string]interface{})
-			for _, entityFile := range entitiesFiles {
-				if !entityFile.IsDir() && len(entityFile.Name()) > 4 && entityFile.Name()[len(entityFile.Name())-4:] == ".mca" {
-					entityPath := entitiesDir + "/" + entityFile.Name()
-					r, err := region.Open(entityPath)
-					if err != nil {
-						log.Printf("Warning: Failed to open entity file %s: %v", entityPath, err)
-						continue
-					}
-					defer r.Close()
-
-					entityChunks := make(map[string]interface{})
-					for i := 0; i < 32; i++ {
-						for j := 0; j < 32; j++ {
-							if !r.ExistSector(i, j) {
-								continue
-							}
-
-							data, err := r.ReadSector(i, j)
-							if err != nil {
-								log.Printf("Warning: Failed to read sector (%d,%d) in entity file %s: %v", i, j, entityPath, err)
-								continue
-							}
-
-							// Skip empty data
-							if len(data) == 0 {
-								continue
-							}
-
-							entityChunk, err := decodeAny(data)
-							if err != nil {
-								log.Printf("Warning: Failed to decode sector (%d,%d) in entity file %s: %v", i, j, entityPath, err)
-								continue
-							}
-
-							entityChunkKey := fmt.Sprintf("chunk_%d_%d", i, j)
-							entityChunks[entityChunkKey] = entityChunk
-						}
-					}
-					entities[entityFile.Name()] = entityChunks
-				}
-			}
-			result["entities"] = entities
-		}
-	}
-
-	return result, nil
 }
