@@ -1,91 +1,99 @@
 # MC-NBT
 
-A Go package for parsing Minecraft Schematics
+MC-NBT is a Go library for working with Minecraft NBT (Named Binary Tag) data, specifically focused on schematic formats used in Minecraft.
 
 ## Features
 
-- Parse Minecraft Schematics (Litematica, Create, WorldEdit, etc.) as JSON
-- Extract block counts and other information from schematics
+- Parse and decode NBT data from various Minecraft schematic formats:
+  - Litematica (.litematic)
+  - WorldEdit (.schem)
+  - Create (.nbt)
 - Convert between different schematic formats
+- Unified standard format that consolidates blocks, entities, and tile entities
+- Encode and save schematics in any supported format
 
-## Installation
+## Standard Format
 
-```bash
-go get github.com/uberswe/mcnbt
-```
+The library uses a standard format that can represent any of the supported schematic formats. This standard format consolidates blocks, entities, and tile entities into a single data structure, making it easier to work with and convert between formats.
+
+The `StandardBlock` type represents blocks, entities, and tile entities with a `Type` field to distinguish between them:
+- `"block"` for regular blocks
+- `"entity"` for entities
+- `"tile_entity"` for tile entities (block entities)
 
 ## Usage
 
-### Command Line
-
-The package includes a command-line tool for parsing and converting Minecraft schematics and world saves:
-
-```bash
-# Parse a schematic file
-go run cmd/main.go path/to/schematic.litematic
-
-
-# Specify output format and file
-go run cmd/main.go path/to/schematic.litematic --format=json --output=output.json
-```
-
-### Library
-
-To use the library in your Go code:
+### Parsing a Schematic
 
 ```go
-package main
+// Parse a schematic file
+data, err := mcnbt.ParseAnyFromFileAsJSON("path/to/schematic.litematic")
+if err != nil {
+    // Handle error
+}
 
-import (
-    "fmt"
-    "github.com/uberswe/mcnbt"
-)
+// Convert to standard format
+standard, err := mcnbt.ConvertToStandard(data)
+if err != nil {
+    // Handle error
+}
 
-func main() {
-    // Parse a schematic file as JSON
-    schematicData, err := mcnbt.ParseAnyFromFileAsJSON("path/to/schematic.litematic")
-    if err != nil {
-        fmt.Println("Error:", err)
-        return
+// Access blocks, entities, and tile entities
+for _, block := range standard.Blocks {
+    switch block.Type {
+    case "block":
+        // Handle block
+    case "entity":
+        // Handle entity
+    case "tile_entity":
+        // Handle tile entity
     }
+}
+```
 
+### Converting Between Formats
 
-    // Convert to standard format
-    standardData, err := mcnbt.ConvertToStandard(schematicData)
-    if err != nil {
-        fmt.Println("Error:", err)
-        return
-    }
+```go
+// Parse a schematic file
+data, err := mcnbt.ParseAnyFromFileAsJSON("path/to/schematic.litematic")
+if err != nil {
+    // Handle error
+}
 
-    // Convert from standard format to another format
-    litematicaData, err := mcnbt.ConvertFromStandard(standardData, "litematica")
-    if err != nil {
-        fmt.Println("Error:", err)
-        return
-    }
+// Convert to standard format
+standard, err := mcnbt.ConvertToStandard(data)
+if err != nil {
+    // Handle error
+}
 
-    fmt.Println("Successfully processed data")
+// Convert to another format
+worldEdit, err := mcnbt.ConvertFromStandard(standard, "worldedit")
+if err != nil {
+    // Handle error
+}
+
+// Save to file
+err = mcnbt.EncodeToFile(worldEdit, "worldedit", "path/to/output.schem")
+if err != nil {
+    // Handle error
 }
 ```
 
 ## Supported Formats
 
-The library supports the following formats:
+### Litematica (.litematic)
 
-- Litematica (`.litematic`)
-- WorldEdit (`.schem`)
-- Create (`.nbt`)
+Litematica is a mod for Minecraft that allows players to create and place schematics. The library supports parsing and creating Litematica schematics.
 
-## Data Structures
+### WorldEdit (.schem)
 
-The library provides clean, non-nested struct definitions for each format:
+WorldEdit is a popular in-game map editor for Minecraft. The library supports parsing and creating WorldEdit schematics.
 
-- `LitematicaNBT` - Represents a Litematica schematic
-- `WorldEditNBT` - Represents a WorldEdit schematic
-- `CreateNBT` - Represents a Create schematic
-- `StandardFormat` - A unified format that can represent any of the above
+### Create (.nbt)
 
+Create is a mod for Minecraft that adds various mechanical blocks and tools. The library supports parsing and creating Create schematics.
 
-## License
+## Notes
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+- When converting between formats, some data loss may occur, especially for entities and tile entities, as different formats support different features.
+- The library focuses on preserving block data during conversion, while entity and tile entity data may be simplified or lost.
