@@ -34,8 +34,8 @@ type LitematicaMetadata struct {
 
 // LitematicaBlockStatePalette represents a block state in the palette
 type LitematicaBlockStatePalette struct {
-	Name       string             `json:"Name"`
-	Properties BlockStateProperty `json:"Properties,omitempty"`
+	Name       string            `json:"Name"`
+	Properties map[string]string `json:"Properties,omitempty"`
 }
 
 // LitematicaEntity represents an entity in a litematica schematic
@@ -72,6 +72,7 @@ type LitematicaEntity struct {
 // LitematicaTileEntity represents a tile entity in a litematica schematic
 type LitematicaTileEntity struct {
 	Items             []interface{} `json:"Items,omitempty"`
+	Id                string        `json:"Id,omitempty"`
 	X                 int           `json:"x"`
 	Y                 int           `json:"y"`
 	Z                 int           `json:"z"`

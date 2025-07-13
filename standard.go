@@ -310,201 +310,36 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	for i, palette := range region.BlockStatePalette {
 		sf.Palette[i] = StandardPalette{
 			Name:       palette.Name,
+			Properties: palette.Properties,
+		}
+	}
+
+	if len(sf.Palette) <= 1 {
+		// If the palette is empty or only has air, add a default block
+		sf.Palette[len(sf.Palette)] = StandardPalette{
+			Name:       "minecraft:stone",
 			Properties: make(map[string]string),
 		}
-		// Add properties if they exist
-		if palette.Properties.Snowy != "" {
-			sf.Palette[i].Properties["snowy"] = palette.Properties.Snowy
-		}
 	}
 
-	// Create a map to store block positions and states for efficient lookup
-	blockMap := make(map[string]int)
+	// Pre-allocate blocks slice
+	sf.Blocks = make([]StandardBlock, 0, len(region.TileEntities))
 
-	// Process blocks if BlockStates array is not empty
-	if len(region.BlockStates) > 0 {
-		// Calculate a safe capacity for the blocks slice
-		// Ensure all dimensions are positive
-		sizeX, sizeY, sizeZ := abs(region.Size.X), abs(region.Size.Y), abs(region.Size.Z)
-
-		// Calculate total volume (safely)
-		totalVolume := region.Size.X * region.Size.Y * region.Size.Z
-
-		// Use a reasonable default capacity if dimensions are too large
-		var capacity int
-		if sizeX > 0 && sizeY > 0 && sizeZ > 0 &&
-			// Check if multiplication would overflow
-			sizeX <= 1000 && sizeY <= 1000 && sizeZ <= 1000 {
-			safeVolume := sizeX * sizeY * sizeZ
-			// Limit the capacity to a reasonable value
-			if safeVolume > 1000000 {
-				capacity = 1000000 // Cap at 1 million blocks
-			} else {
-				capacity = safeVolume / 2 // Estimate that ~50% of blocks are non-air
-			}
-		} else {
-			// Use a modest default capacity
-			capacity = 10000
-		}
-
-		sf.Blocks = make([]StandardBlock, 0, capacity)
-
-		// Process BlockStates array
-		for i := 0; i < totalVolume && i < len(region.BlockStates); i++ {
-			// Calculate the 3D position from the 1D index
-			x := i % region.Size.X
-			y := (i / region.Size.X) % region.Size.Y
-			z := i / (region.Size.X * region.Size.Y)
-
-			// Get the palette index for this position
-			paletteIndex, ok := getPaletteIndex(region.BlockStates[i])
-			if !ok {
-				continue // Skip if we can't determine the palette index
-			}
-
-			// Skip air blocks (usually palette index 0)
-			if paletteIndex == 0 {
-				continue
-			}
-
-			// Create and add a StandardBlock
-			block := StandardBlock{
-				Position: StandardBlockPosition{
-					X: float64(x),
-					Y: float64(y),
-					Z: float64(z),
-				},
-				State: paletteIndex,
-			}
-
-			sf.Blocks = append(sf.Blocks, block)
-
-			// Store the block in the map for tile entity lookup
-			blockMap[fmt.Sprintf("%d,%d,%d", x, y, z)] = len(sf.Blocks) - 1
-		}
-	}
-
-	// If no blocks were found in BlockStates, create blocks from tile entities as a fallback
-	if len(sf.Blocks) == 0 && len(region.TileEntities) > 0 {
-		// Use the first palette entry for all blocks (usually not air)
-		paletteIndex := 1
-		if len(sf.Palette) <= 1 {
-			// If the palette is empty or only has air, add a default block
-			sf.Palette[len(sf.Palette)] = StandardPalette{
-				Name:       "minecraft:stone",
-				Properties: make(map[string]string),
-			}
-			paletteIndex = 1
-		}
-
-		// Pre-allocate blocks slice
-		sf.Blocks = make([]StandardBlock, 0, len(region.TileEntities))
-
-		// Create blocks for each tile entity
-		for _, tileEntity := range region.TileEntities {
-			// Create and add a StandardBlock
-			block := StandardBlock{
-				Position: struct {
-					X float64 `json:"x"`
-					Y float64 `json:"y"`
-					Z float64 `json:"z"`
-				}{
-					X: float64(tileEntity.X),
-					Y: float64(tileEntity.Y),
-					Z: float64(tileEntity.Z),
-				},
-				State: paletteIndex,
-			}
-
-			sf.Blocks = append(sf.Blocks, block)
-
-			// Store the block in the map for tile entity lookup
-			blockMap[fmt.Sprintf("%d,%d,%d", tileEntity.X, tileEntity.Y, tileEntity.Z)] = len(sf.Blocks) - 1
-		}
-	}
-
-	// Associate tile entities with blocks
+	// Create blocks for each tile entity
 	for _, tileEntity := range region.TileEntities {
-		key := fmt.Sprintf("%d,%d,%d", tileEntity.X, tileEntity.Y, tileEntity.Z)
-		if blockIndex, ok := blockMap[key]; ok && blockIndex < len(sf.Blocks) {
-			// Create a map for the tile entity data
-			teData := make(map[string]interface{})
-			teData["x"] = tileEntity.X
-			teData["y"] = tileEntity.Y
-			teData["z"] = tileEntity.Z
-
-			// Add any other tile entity data
-			if len(tileEntity.Items) > 0 {
-				teData["Items"] = tileEntity.Items
-			}
-			if len(tileEntity.CookingTimes) > 0 {
-				teData["CookingTimes"] = tileEntity.CookingTimes
-			}
-			if len(tileEntity.CookingTotalTimes) > 0 {
-				teData["CookingTotalTimes"] = tileEntity.CookingTotalTimes
-			}
-			if len(tileEntity.Bees) > 0 {
-				teData["Bees"] = tileEntity.Bees
-			}
-
-			// Set the NBT data for the block
-			sf.Blocks[blockIndex].NBT = teData
-		}
-	}
-
-	// Convert entities
-	for _, entity := range region.Entities {
-		// Skip entities with invalid position data
-		if len(entity.Pos) < 3 || len(entity.Rotation) < 2 || len(entity.Motion) < 3 {
-			continue
-		}
-
-		// Create a StandardBlock for the entity
-		entityBlock := StandardBlock{
-			Type: "entity",
-			ID:   entity.ID,
+		// Create and add a StandardBlock
+		block := StandardBlock{
 			Position: StandardBlockPosition{
-				X: entity.Pos[0],
-				Y: entity.Pos[1],
-				Z: entity.Pos[2],
+				X: float64(tileEntity.X),
+				Y: float64(tileEntity.Y),
+				Z: float64(tileEntity.Z),
 			},
-			Rotation: struct {
-				Yaw   float64 `json:"yaw,omitempty"`
-				Pitch float64 `json:"pitch,omitempty"`
-			}{
-				Yaw:   entity.Rotation[0],
-				Pitch: entity.Rotation[1],
-			},
-			Motion: struct {
-				X float64 `json:"x,omitempty"`
-				Y float64 `json:"y,omitempty"`
-				Z float64 `json:"z,omitempty"`
-			}{
-				X: entity.Motion[0],
-				Y: entity.Motion[1],
-				Z: entity.Motion[2],
-			},
+			ID: tileEntity.Id,
 		}
-		sf.Blocks = append(sf.Blocks, entityBlock)
-	}
 
-	// Convert tile entities that don't have associated blocks
-	for _, tileEntity := range region.TileEntities {
-		// Check if this tile entity is already associated with a block
-		key := fmt.Sprintf("%d,%d,%d", tileEntity.X, tileEntity.Y, tileEntity.Z)
-		if _, ok := blockMap[key]; !ok {
-			// Create a StandardBlock for the tile entity
-			tileEntityBlock := StandardBlock{
-				Type: "tile_entity",
-				ID:   "unknown", // The ID is not provided in the struct
-				Position: StandardBlockPosition{
-					X: float64(tileEntity.X),
-					Y: float64(tileEntity.Y),
-					Z: float64(tileEntity.Z),
-				},
-			}
-			sf.Blocks = append(sf.Blocks, tileEntityBlock)
-		}
+		// TODO need to copy properties like orientation
+
+		sf.Blocks = append(sf.Blocks, block)
 	}
 
 	return sf, nil
@@ -1028,13 +863,7 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 	region.BlockStatePalette = make([]LitematicaBlockStatePalette, len(standard.Palette))
 	for i, palette := range standard.Palette {
 		region.BlockStatePalette[i].Name = palette.Name
-
-		// Convert properties
-		// This is a simplified example; in a real implementation,
-		// you would need to handle all possible properties
-		if snowy, ok := palette.Properties["snowy"]; ok {
-			region.BlockStatePalette[i].Properties.Snowy = snowy
-		}
+		region.BlockStatePalette[i].Properties = palette.Properties
 	}
 
 	// Convert blocks to BlockStates array
