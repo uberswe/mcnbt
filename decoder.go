@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Tnze/go-mc/nbt"
-	"github.com/Tnze/go-mc/save/region"
 	"io"
 	"log"
 	"os"
@@ -84,139 +83,6 @@ func ParseAnyFromFileAsJSON(f string) (interface{}, error) {
 	}
 
 	return res, nil
-}
-
-func Decode(r io.Reader) ([]NbtBlock, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read data: %w", err)
-	}
-
-	schematic, err := decodeSchematic(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode schematic: %w", err)
-	}
-
-	// Pre-allocate slices with capacity to reduce reallocations
-	nbtSlice := make([]NbtBlock, 0, len(schematic.Blocks)/4) // Estimate that ~25% of blocks have NBT data
-
-	// Initialize palette slice with names
-	paletteSlice := make([]NbtBlock, len(schematic.Palette))
-	for i, tag := range schematic.Palette {
-		paletteSlice[i] = NbtBlock{Name: tag.Name}
-	}
-
-	// Process blocks
-	for _, tag := range schematic.Blocks {
-		// Increment block count in palette
-		if tag.State >= 0 && tag.State < len(paletteSlice) {
-			paletteSlice[tag.State].Count++
-		}
-
-		// Process NBT data if present
-		if tag.Nbt != nil {
-			n, err := decodeNbt(tag.Nbt)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode NBT data: %w", err)
-			}
-			if n != nil && n.Item.ID != "" {
-				nbtSlice = append(nbtSlice, NbtBlock{
-					Name:  n.Item.ID,
-					Count: n.Item.Count,
-				})
-			}
-		}
-	}
-
-	// Use a map to aggregate blocks by name for better performance
-	blockCounts := make(map[string]int)
-
-	// Add palette blocks to the map
-	for _, ps := range paletteSlice {
-		if ps.Name != "" {
-			blockCounts[ps.Name] += ps.Count
-		}
-	}
-
-	// Add NBT blocks to the map
-	for _, ns := range nbtSlice {
-		if ns.Name != "" {
-			blockCounts[ns.Name] += ns.Count
-		}
-	}
-
-	// Convert map to slice
-	aggr := make([]NbtBlock, 0, len(blockCounts))
-	for name, count := range blockCounts {
-		aggr = append(aggr, NbtBlock{
-			Name:  name,
-			Count: count,
-		})
-	}
-
-	return aggr, nil
-}
-
-func decodeSchematic(data []byte) (*NbtSchematic, error) {
-	r, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer r.Close()
-
-	schematic := new(NbtSchematic)
-	if _, err = nbt.NewDecoder(r).Decode(schematic); err != nil {
-		return nil, fmt.Errorf("failed to decode schematic: %w", err)
-	}
-	return schematic, nil
-}
-
-func decodeRegion(f string) error {
-	r, err := region.Open(f)
-	if err != nil {
-		return fmt.Errorf("failed to open region file %s: %w", f, err)
-	}
-	defer r.Close()
-
-	// Process all sectors in the region file
-	for i := 0; i < 32; i++ {
-		for j := 0; j < 32; j++ {
-			// Skip non-existent sectors
-			if !r.ExistSector(i, j) {
-				continue
-			}
-
-			// Read sector data
-			data, err := r.ReadSector(i, j)
-			if err != nil {
-				log.Printf("Warning: Failed to read sector (%d,%d) in %s: %v", i, j, f, err)
-				continue
-			}
-
-			// Skip empty data
-			if len(data) == 0 {
-				continue
-			}
-
-			// Decode the sector data
-			dd, err := decodeAny(data)
-			if err != nil {
-				log.Printf("Warning: Failed to decode sector (%d,%d) in %s: %v", i, j, f, err)
-				continue
-			}
-
-			// Marshal the decoded data to JSON
-			marshal, err := json.MarshalIndent(dd, "", "  ")
-			if err != nil {
-				log.Printf("Warning: Failed to marshal JSON for sector (%d,%d) in %s: %v", i, j, f, err)
-				continue
-			}
-
-			// Print the JSON data
-			log.Println(string(marshal))
-		}
-	}
-	return nil
 }
 
 func decodeAny(data []byte) (interface{}, error) {
@@ -296,15 +162,4 @@ func decodeNbt(val interface{}) (*Nbt, error) {
 	}
 
 	return nil, errors.New("unknown type of nbt")
-}
-
-// must is a helper function that panics if err is not nil
-// It's useful for operations that should never fail in normal circumstances
-func must[T any](v T, err error) T {
-	if err != nil {
-		// Print the error and exit with a non-zero status code
-		fmt.Fprintf(os.Stderr, "Fatal error: %v\n", err)
-		os.Exit(1)
-	}
-	return v
 }

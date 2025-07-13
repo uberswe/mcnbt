@@ -11,120 +11,97 @@ import (
 // and Minecraft world saves.
 type StandardFormat struct {
 	// Metadata about the schematic or world save
-	Metadata struct {
-		// Basic information
-		Name        string `json:"name"`
-		Author      string `json:"author"`
-		Description string `json:"description"`
-
-		// Time information
-		TimeCreated  int64 `json:"timeCreated"`
-		TimeModified int64 `json:"timeModified"`
-
-		// Size and volume information
-		TotalBlocks int `json:"totalBlocks"`
-		TotalVolume int `json:"totalVolume"`
-
-		// Preview image if available
-		PreviewImageData []int `json:"previewImageData,omitempty"`
-	} `json:"metadata"`
+	Metadata StandardMetadata `json:"metadata"`
 
 	// Minecraft version information
 	DataVersion int `json:"dataVersion"`
 	Version     int `json:"version"`
 
 	// Dimensions of the structure
-	Size struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-		Z int `json:"z"`
-	} `json:"size"`
+	Size StandardSize `json:"size"`
 
 	// Position/offset information
-	Position struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-		Z int `json:"z"`
-	} `json:"position"`
+	Position StandardPosition `json:"position"`
 
 	// Block data
 	Blocks []StandardBlock `json:"blocks"`
 
-	// Block palette (mapping block names to IDs)
-	Palette []StandardPalette `json:"palette"`
-
-	// Entities in the structure
-	Entities []Entity `json:"entities"`
-
-	// Tile entities (block entities) in the structure
-	TileEntities []TileEntity `json:"tileEntities"`
+	// Palette data
+	Palette map[int]StandardPalette `json:"Palette"`
 
 	// Original format type
 	OriginalFormat string `json:"originalFormat"`
-
-	// Raw data from the original format (for any format-specific data)
-	RawData interface{} `json:"rawData,omitempty"`
 }
 
-// Entity represents a Minecraft entity
-type Entity struct {
-	// Entity type ID
-	ID string `json:"id"`
+type StandardMetadata struct {
+	// Basic information
+	Name        string `json:"name"`
+	Author      string `json:"author"`
+	Description string `json:"description"`
 
-	// Entity position
-	Position struct {
-		X float64 `json:"x"`
-		Y float64 `json:"y"`
-		Z float64 `json:"z"`
-	} `json:"position"`
+	// Time information
+	TimeCreated  int64 `json:"timeCreated"`
+	TimeModified int64 `json:"timeModified"`
+
+	// Size and volume information
+	TotalBlocks int `json:"totalBlocks"`
+	TotalVolume int `json:"totalVolume"`
+
+	// Preview image if available
+	PreviewImageData []int `json:"previewImageData,omitempty"`
+}
+
+type StandardSize struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	Z int `json:"z"`
+}
+
+type StandardPosition struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	Z int `json:"z"`
+}
+
+// StandardBlock represents a block, entity, or tile entity in the standard format
+type StandardBlock struct {
+	// Type of the object (block, entity, or tile entity)
+	Type string `json:"type,omitempty"`
+
+	// ID for entities and tile entities
+	ID string `json:"id,omitempty"`
+
+	// Position of the block/tile entity (integer coordinates)
+	Position StandardBlockPosition `json:"position"`
 
 	// Entity rotation
-	Rotation struct {
-		Yaw   float64 `json:"yaw"`
-		Pitch float64 `json:"pitch"`
-	} `json:"rotation"`
+	Rotation StandardRotation `json:"rotation,omitempty"`
 
 	// Entity motion/velocity
-	Motion struct {
-		X float64 `json:"x"`
-		Y float64 `json:"y"`
-		Z float64 `json:"z"`
-	} `json:"motion"`
-
-	// Entity NBT data (for format-specific entity data)
-	NBT interface{} `json:"nbt,omitempty"`
-}
-
-// TileEntity represents a Minecraft tile entity (block entity)
-type TileEntity struct {
-	// Tile entity type ID
-	ID string `json:"id"`
-
-	// Tile entity position
-	Position struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-		Z int `json:"z"`
-	} `json:"position"`
-
-	// Tile entity NBT data (for format-specific tile entity data)
-	NBT interface{} `json:"nbt,omitempty"`
-}
-
-// StandardBlock represents a block in the standard format
-type StandardBlock struct {
-	// Position of the block
-	Position struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-		Z int `json:"z"`
-	} `json:"position"`
+	Motion StandardMotion `json:"motion,omitempty"`
 
 	// State/ID of the block in the palette
-	State int `json:"state"`
+	State int `json:"state,omitempty"`
 
-	// NBT data for the block (if any)
+	// NBT data for the block/entity/tile entity (if any)
 	NBT interface{} `json:"nbt,omitempty"`
+}
+
+type StandardBlockPosition struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+}
+
+type StandardRotation struct {
+	Yaw   float64 `json:"yaw,omitempty"`
+	Pitch float64 `json:"pitch,omitempty"`
+}
+
+type StandardMotion struct {
+	X float64 `json:"x,omitempty"`
+	Y float64 `json:"y,omitempty"`
+	Z float64 `json:"z,omitempty"`
 }
 
 // StandardPalette represents a block type in the palette
@@ -252,9 +229,9 @@ func ConvertFromStandard(standard *StandardFormat, format string) (interface{}, 
 
 				// Set position, preserving the original position
 				blockMap["pos"] = []int{
-					block.Position.X - standard.Position.X, // Adjust X position
-					block.Position.Y - standard.Position.Y, // Adjust Y position
-					block.Position.Z - standard.Position.Z, // Adjust Z position
+					int(block.Position.X) - standard.Position.X, // Adjust X position
+					int(block.Position.Y) - standard.Position.Y, // Adjust Y position
+					int(block.Position.Z) - standard.Position.Z, // Adjust Z position
 				}
 
 				// Set state (palette index)
@@ -291,12 +268,7 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 		Version:     litematica.Version,
 
 		// Initialize slices
-		Blocks:       make([]StandardBlock, 0),
-		Entities:     make([]Entity, 0),
-		TileEntities: make([]TileEntity, 0),
-
-		// Store the original data
-		RawData: litematica,
+		Blocks: make([]StandardBlock, 0),
 	}
 
 	// Set metadata
@@ -332,7 +304,7 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	sf.Position.Z = region.Position.Z
 
 	// Convert palette
-	sf.Palette = make([]StandardPalette, len(region.BlockStatePalette))
+	sf.Palette = make(map[int]StandardPalette, len(region.BlockStatePalette))
 	for i, palette := range region.BlockStatePalette {
 		sf.Palette[i] = StandardPalette{
 			Name:       palette.Name,
@@ -395,14 +367,10 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 
 			// Create and add a StandardBlock
 			block := StandardBlock{
-				Position: struct {
-					X int `json:"x"`
-					Y int `json:"y"`
-					Z int `json:"z"`
-				}{
-					X: x,
-					Y: y,
-					Z: z,
+				Position: StandardBlockPosition{
+					X: float64(x),
+					Y: float64(y),
+					Z: float64(z),
 				},
 				State: paletteIndex,
 			}
@@ -420,10 +388,10 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 		paletteIndex := 1
 		if len(sf.Palette) <= 1 {
 			// If the palette is empty or only has air, add a default block
-			sf.Palette = append(sf.Palette, StandardPalette{
+			sf.Palette[len(sf.Palette)] = StandardPalette{
 				Name:       "minecraft:stone",
 				Properties: make(map[string]string),
-			})
+			}
 			paletteIndex = 1
 		}
 
@@ -435,13 +403,13 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 			// Create and add a StandardBlock
 			block := StandardBlock{
 				Position: struct {
-					X int `json:"x"`
-					Y int `json:"y"`
-					Z int `json:"z"`
+					X float64 `json:"x"`
+					Y float64 `json:"y"`
+					Z float64 `json:"z"`
 				}{
-					X: tileEntity.X,
-					Y: tileEntity.Y,
-					Z: tileEntity.Z,
+					X: float64(tileEntity.X),
+					Y: float64(tileEntity.Y),
+					Z: float64(tileEntity.Z),
 				},
 				State: paletteIndex,
 			}
@@ -483,60 +451,58 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	}
 
 	// Convert entities
-	sf.Entities = make([]Entity, 0, len(region.Entities))
 	for _, entity := range region.Entities {
 		// Skip entities with invalid position data
 		if len(entity.Pos) < 3 || len(entity.Rotation) < 2 || len(entity.Motion) < 3 {
 			continue
 		}
 
-		e := Entity{
-			ID: entity.ID,
-			Position: struct {
-				X float64 `json:"x"`
-				Y float64 `json:"y"`
-				Z float64 `json:"z"`
-			}{
+		// Create a StandardBlock for the entity
+		entityBlock := StandardBlock{
+			Type: "entity",
+			ID:   entity.ID,
+			Position: StandardBlockPosition{
 				X: entity.Pos[0],
 				Y: entity.Pos[1],
 				Z: entity.Pos[2],
 			},
 			Rotation: struct {
-				Yaw   float64 `json:"yaw"`
-				Pitch float64 `json:"pitch"`
+				Yaw   float64 `json:"yaw,omitempty"`
+				Pitch float64 `json:"pitch,omitempty"`
 			}{
 				Yaw:   entity.Rotation[0],
 				Pitch: entity.Rotation[1],
 			},
 			Motion: struct {
-				X float64 `json:"x"`
-				Y float64 `json:"y"`
-				Z float64 `json:"z"`
+				X float64 `json:"x,omitempty"`
+				Y float64 `json:"y,omitempty"`
+				Z float64 `json:"z,omitempty"`
 			}{
 				X: entity.Motion[0],
 				Y: entity.Motion[1],
 				Z: entity.Motion[2],
 			},
 		}
-		sf.Entities = append(sf.Entities, e)
+		sf.Blocks = append(sf.Blocks, entityBlock)
 	}
 
-	// Convert tile entities
-	sf.TileEntities = make([]TileEntity, 0, len(region.TileEntities))
+	// Convert tile entities that don't have associated blocks
 	for _, tileEntity := range region.TileEntities {
-		te := TileEntity{
-			ID: "unknown", // The ID is not provided in the struct
-			Position: struct {
-				X int `json:"x"`
-				Y int `json:"y"`
-				Z int `json:"z"`
-			}{
-				X: tileEntity.X,
-				Y: tileEntity.Y,
-				Z: tileEntity.Z,
-			},
+		// Check if this tile entity is already associated with a block
+		key := fmt.Sprintf("%d,%d,%d", tileEntity.X, tileEntity.Y, tileEntity.Z)
+		if _, ok := blockMap[key]; !ok {
+			// Create a StandardBlock for the tile entity
+			tileEntityBlock := StandardBlock{
+				Type: "tile_entity",
+				ID:   "unknown", // The ID is not provided in the struct
+				Position: StandardBlockPosition{
+					X: float64(tileEntity.X),
+					Y: float64(tileEntity.Y),
+					Z: float64(tileEntity.Z),
+				},
+			}
+			sf.Blocks = append(sf.Blocks, tileEntityBlock)
 		}
-		sf.TileEntities = append(sf.TileEntities, te)
 	}
 
 	return sf, nil
@@ -579,12 +545,7 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 		Version:     worldEdit.Version,
 
 		// Initialize slices
-		Blocks:       make([]StandardBlock, 0),
-		Entities:     make([]Entity, 0),
-		TileEntities: make([]TileEntity, 0),
-
-		// Store the original data
-		RawData: worldEdit,
+		Blocks: make([]StandardBlock, 0),
 	}
 
 	// Set size
@@ -600,7 +561,7 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 	}
 
 	// Convert palette
-	sf.Palette = make([]StandardPalette, len(worldEdit.Palette))
+	sf.Palette = make(map[int]StandardPalette, len(worldEdit.Palette))
 	i := 0
 	for name := range worldEdit.Palette {
 		// Parse the name and properties
@@ -662,14 +623,10 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 
 			// Create and add a StandardBlock
 			block := StandardBlock{
-				Position: struct {
-					X int `json:"x"`
-					Y int `json:"y"`
-					Z int `json:"z"`
-				}{
-					X: x,
-					Y: y,
-					Z: z,
+				Position: StandardBlockPosition{
+					X: float64(x),
+					Y: float64(y),
+					Z: float64(z),
 				},
 				State: paletteIndex,
 			}
@@ -687,10 +644,10 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 		paletteIndex := 1
 		if len(sf.Palette) <= 1 {
 			// If the palette is empty or only has air, add a default block
-			sf.Palette = append(sf.Palette, StandardPalette{
+			sf.Palette[len(sf.Palette)] = StandardPalette{
 				Name:       "minecraft:stone",
 				Properties: make(map[string]string),
-			})
+			}
 			paletteIndex = 1
 		}
 
@@ -704,14 +661,10 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 
 			// Create and add a StandardBlock
 			block := StandardBlock{
-				Position: struct {
-					X int `json:"x"`
-					Y int `json:"y"`
-					Z int `json:"z"`
-				}{
-					X: x,
-					Y: y,
-					Z: z,
+				Position: StandardBlockPosition{
+					X: float64(x),
+					Y: float64(y),
+					Z: float64(z),
 				},
 				State: paletteIndex,
 			}
@@ -735,33 +688,33 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 		}
 	}
 
-	// Convert block entities to tile entities
-	sf.TileEntities = make([]TileEntity, 0, len(worldEdit.BlockEntities))
+	// Convert block entities to tile entities that don't have associated blocks
 	for _, blockEntity := range worldEdit.BlockEntities {
 		// Extract position
 		x, y, z := extractBlockEntityPosition(blockEntity)
 
-		// Extract ID
-		id := "unknown"
-		if idVal, ok := blockEntity["id"].(string); ok {
-			id = idVal
-		}
+		// Check if this tile entity is already associated with a block
+		key := fmt.Sprintf("%d,%d,%d", x, y, z)
+		if _, ok := blockMap[key]; !ok {
+			// Extract ID
+			id := "unknown"
+			if idVal, ok := blockEntity["id"].(string); ok {
+				id = idVal
+			}
 
-		te := TileEntity{
-			ID: id,
-			Position: struct {
-				X int `json:"x"`
-				Y int `json:"y"`
-				Z int `json:"z"`
-			}{
-				X: x,
-				Y: y,
-				Z: z,
-			},
-			NBT: blockEntity,
+			// Create a StandardBlock for the tile entity
+			tileEntityBlock := StandardBlock{
+				Type: "tile_entity",
+				ID:   id,
+				Position: StandardBlockPosition{
+					X: float64(x),
+					Y: float64(y),
+					Z: float64(z),
+				},
+				NBT: blockEntity,
+			}
+			sf.Blocks = append(sf.Blocks, tileEntityBlock)
 		}
-
-		sf.TileEntities = append(sf.TileEntities, te)
 	}
 
 	return sf, nil
@@ -796,12 +749,7 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 		Version:     0, // Create format doesn't have a version field
 
 		// Initialize slices
-		Blocks:       make([]StandardBlock, 0),
-		Entities:     make([]Entity, 0),
-		TileEntities: make([]TileEntity, 0),
-
-		// Store the original data
-		RawData: create,
+		Blocks: make([]StandardBlock, 0),
 	}
 
 	// Set size
@@ -825,7 +773,7 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 	sf.Position.Z = minZ
 
 	// Convert palette
-	sf.Palette = make([]StandardPalette, len(create.Palette))
+	sf.Palette = make(map[int]StandardPalette, len(create.Palette))
 	for i, palette := range create.Palette {
 		sf.Palette[i] = StandardPalette{
 			Name:       palette.Name,
@@ -865,14 +813,10 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 
 			// Create and add a StandardBlock
 			sb := StandardBlock{
-				Position: struct {
-					X int `json:"x"`
-					Y int `json:"y"`
-					Z int `json:"z"`
-				}{
-					X: posX + sf.Position.X,
-					Y: posY + sf.Position.Y,
-					Z: posZ + sf.Position.Z,
+				Position: StandardBlockPosition{
+					X: float64(posX + sf.Position.X),
+					Y: float64(posY + sf.Position.Y),
+					Z: float64(posZ + sf.Position.Z),
 				},
 				State: state,
 				NBT:   extractBlockNBT(blockMap),
@@ -888,10 +832,10 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 		paletteIndex := 1
 		if len(sf.Palette) <= 1 {
 			// If the palette is empty or only has air, add a default block
-			sf.Palette = append(sf.Palette, StandardPalette{
+			sf.Palette[len(sf.Palette)] = StandardPalette{
 				Name:       "minecraft:stone",
 				Properties: make(map[string]string),
-			})
+			}
 			paletteIndex = 1
 		}
 
@@ -904,14 +848,10 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 
 			// Create and add a StandardBlock
 			block := StandardBlock{
-				Position: struct {
-					X int `json:"x"`
-					Y int `json:"y"`
-					Z int `json:"z"`
-				}{
-					X: tileEntity.Pos[0] + sf.Position.X,
-					Y: tileEntity.Pos[1] + sf.Position.Y,
-					Z: tileEntity.Pos[2] + sf.Position.Z,
+				Position: StandardBlockPosition{
+					X: float64(tileEntity.Pos[0] + sf.Position.X),
+					Y: float64(tileEntity.Pos[1] + sf.Position.Y),
+					Z: float64(tileEntity.Pos[2] + sf.Position.Z),
 				},
 				State: paletteIndex,
 			}
@@ -926,46 +866,42 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 	}
 
 	// Convert entities
-	sf.Entities = make([]Entity, 0, len(create.Entities))
 	for _, entity := range create.Entities {
 		// Skip entities with invalid data
 		if len(entity.Pos) < 3 || len(entity.Nbt.Rotation) < 2 || len(entity.Nbt.Motion) < 3 {
 			continue
 		}
 
-		e := Entity{
-			ID: entity.Nbt.ID,
-			Position: struct {
-				X float64 `json:"x"`
-				Y float64 `json:"y"`
-				Z float64 `json:"z"`
-			}{
+		// Create a StandardBlock for the entity
+		entityBlock := StandardBlock{
+			Type: "entity",
+			ID:   entity.Nbt.ID,
+			Position: StandardBlockPosition{
 				X: entity.Pos[0],
 				Y: entity.Pos[1],
 				Z: entity.Pos[2],
 			},
 			Rotation: struct {
-				Yaw   float64 `json:"yaw"`
-				Pitch float64 `json:"pitch"`
+				Yaw   float64 `json:"yaw,omitempty"`
+				Pitch float64 `json:"pitch,omitempty"`
 			}{
 				Yaw:   float64(entity.Nbt.Rotation[0]),
 				Pitch: float64(entity.Nbt.Rotation[1]),
 			},
 			Motion: struct {
-				X float64 `json:"x"`
-				Y float64 `json:"y"`
-				Z float64 `json:"z"`
+				X float64 `json:"x,omitempty"`
+				Y float64 `json:"y,omitempty"`
+				Z float64 `json:"z,omitempty"`
 			}{
 				X: float64(entity.Nbt.Motion[0]),
 				Y: float64(entity.Nbt.Motion[1]),
 				Z: float64(entity.Nbt.Motion[2]),
 			},
 		}
-		sf.Entities = append(sf.Entities, e)
+		sf.Blocks = append(sf.Blocks, entityBlock)
 	}
 
-	// Convert tile entities
-	sf.TileEntities = make([]TileEntity, 0, len(create.TileEntities))
+	// Convert tile entities that don't already have associated blocks
 	for _, tileEntity := range create.TileEntities {
 		// Skip tile entities with invalid position
 		if len(tileEntity.Pos) < 3 {
@@ -978,21 +914,38 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 			id = idVal
 		}
 
-		te := TileEntity{
-			ID: id,
-			Position: struct {
-				X int `json:"x"`
-				Y int `json:"y"`
-				Z int `json:"z"`
-			}{
-				X: tileEntity.Pos[0] + sf.Position.X,
-				Y: tileEntity.Pos[1] + sf.Position.Y,
-				Z: tileEntity.Pos[2] + sf.Position.Z,
-			},
-			NBT: tileEntity.NBT,
+		// Check if this position already has a block
+		posX := tileEntity.Pos[0] + sf.Position.X
+		posY := tileEntity.Pos[1] + sf.Position.Y
+		posZ := tileEntity.Pos[2] + sf.Position.Z
+
+		// Check if we need to create a new block for this tile entity
+		needNewBlock := true
+		for i, block := range sf.Blocks {
+			if int(block.Position.X) == posX && int(block.Position.Y) == posY && int(block.Position.Z) == posZ {
+				// This position already has a block, just update its NBT data
+				sf.Blocks[i].Type = "block_with_tile_entity"
+				sf.Blocks[i].ID = id
+				sf.Blocks[i].NBT = tileEntity.NBT
+				needNewBlock = false
+				break
+			}
 		}
 
-		sf.TileEntities = append(sf.TileEntities, te)
+		if needNewBlock {
+			// Create a new block for this tile entity
+			tileEntityBlock := StandardBlock{
+				Type: "tile_entity",
+				ID:   id,
+				Position: StandardBlockPosition{
+					X: float64(posX),
+					Y: float64(posY),
+					Z: float64(posZ),
+				},
+				NBT: tileEntity.NBT,
+			}
+			sf.Blocks = append(sf.Blocks, tileEntityBlock)
+		}
 	}
 
 	return sf, nil
@@ -1192,10 +1145,10 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 
 	// Fill the grid with block data
 	for _, block := range standard.Blocks {
-		x, y, z := block.Position.X, block.Position.Y, block.Position.Z
+		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
 
 		// Skip blocks outside the region bounds
-		if x < 0 || x >= region.Size.X || y < 0 || y >= region.Size.Y || z < 0 || z >= region.Size.Z {
+		if x < 0 || int(x) >= region.Size.X || y < 0 || int(y) >= region.Size.Y || z < 0 || int(z) >= region.Size.Z {
 			continue
 		}
 
@@ -1227,21 +1180,15 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 	region.BlockStates = blockStates
 
 	// Convert entities
-	region.Entities = make([]LitematicaEntity, len(standard.Entities))
-	for i, entity := range standard.Entities {
+	region.Entities = make([]LitematicaEntity, len(standard.Blocks))
+	for i, entity := range standard.Blocks {
 		region.Entities[i].ID = entity.ID
 		region.Entities[i].Pos = []float64{entity.Position.X, entity.Position.Y, entity.Position.Z}
 		region.Entities[i].Rotation = []float64{entity.Rotation.Yaw, entity.Rotation.Pitch}
 		region.Entities[i].Motion = []float64{entity.Motion.X, entity.Motion.Y, entity.Motion.Z}
 	}
 
-	// Convert tile entities
-	region.TileEntities = make([]LitematicaTileEntity, len(standard.TileEntities))
-	for i, tileEntity := range standard.TileEntities {
-		region.TileEntities[i].X = tileEntity.Position.X
-		region.TileEntities[i].Y = tileEntity.Position.Y
-		region.TileEntities[i].Z = tileEntity.Position.Z
-	}
+	// We skip litematica tile entities when converting from standard
 
 	// Set the region
 	litematica.Regions = make(map[string]LitematicaRegion)
@@ -1308,7 +1255,7 @@ func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error)
 
 	// Fill the grid with block data
 	for _, block := range standard.Blocks {
-		x, y, z := block.Position.X, block.Position.Y, block.Position.Z
+		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
 
 		// Skip blocks outside the schematic bounds
 		if x < 0 || x >= worldEdit.Width || y < 0 || y >= worldEdit.Height || z < 0 || z >= worldEdit.Length {
@@ -1339,12 +1286,12 @@ func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error)
 		}
 	}
 
-	// Set the BlockData
+	// TODO figure out if this is the right way to Set the BlockData
 	worldEdit.BlockData = string(blockData)
 
 	// Convert block entities
-	worldEdit.BlockEntities = make([]map[string]any, len(standard.TileEntities))
-	for i, tileEntity := range standard.TileEntities {
+	worldEdit.BlockEntities = make([]map[string]any, len(standard.Blocks))
+	for i, tileEntity := range standard.Blocks {
 		worldEdit.BlockEntities[i] = make(map[string]any)
 		worldEdit.BlockEntities[i]["id"] = tileEntity.ID
 		worldEdit.BlockEntities[i]["x"] = tileEntity.Position.X
@@ -1394,9 +1341,9 @@ func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 
 		// Set position, preserving the original position
 		blockMap["pos"] = []int{
-			block.Position.X - standard.Position.X, // Adjust X position
-			block.Position.Y - standard.Position.Y, // Adjust Y position
-			block.Position.Z - standard.Position.Z, // Adjust Z position
+			int(block.Position.X) - standard.Position.X, // Adjust X position
+			int(block.Position.Y) - standard.Position.Y, // Adjust Y position
+			int(block.Position.Z) - standard.Position.Z, // Adjust Z position
 		}
 
 		// Set state (palette index)
@@ -1411,49 +1358,7 @@ func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 		create.Blocks[i] = blockMap
 	}
 
-	// Convert entities
-	create.Entities = make([]CreateEntity, len(standard.Entities))
-	for i, entity := range standard.Entities {
-		create.Entities[i].Nbt.ID = entity.ID
-		create.Entities[i].Nbt.Motion = []int{int(entity.Motion.X), int(entity.Motion.Y), int(entity.Motion.Z)}
-		create.Entities[i].Nbt.Rotation = []int{int(entity.Rotation.Yaw), int(entity.Rotation.Pitch)}
-		create.Entities[i].Pos = []float64{entity.Position.X, entity.Position.Y, entity.Position.Z}
-		create.Entities[i].BlockPos = []int{int(entity.Position.X), int(entity.Position.Y), int(entity.Position.Z)}
-	}
-
-	// Convert tile entities
-	create.TileEntities = make([]CreateTileEntity, len(standard.TileEntities))
-	for i, tileEntity := range standard.TileEntities {
-		// Create a new tile entity
-		te := CreateTileEntity{}
-
-		// Set position, adjusting for the schematic position
-		te.Pos = []int{
-			tileEntity.Position.X - standard.Position.X,
-			tileEntity.Position.Y - standard.Position.Y,
-			tileEntity.Position.Z - standard.Position.Z,
-		}
-
-		// Set NBT data
-		if tileEntity.NBT != nil {
-			// Try to convert NBT data to a map
-			if nbtMap, ok := tileEntity.NBT.(map[string]interface{}); ok {
-				te.NBT = nbtMap
-			} else {
-				// Create a new map
-				te.NBT = make(map[string]interface{})
-			}
-		} else {
-			// Create a new map
-			te.NBT = make(map[string]interface{})
-		}
-
-		// Ensure the ID is set in the NBT data
-		te.NBT["id"] = tileEntity.ID
-
-		// Add the tile entity to the list
-		create.TileEntities[i] = te
-	}
+	// Skip entities and tile entities when converting to world edit
 
 	return create, nil
 }
