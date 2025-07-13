@@ -3,6 +3,8 @@ package mcnbt
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"reflect"
 	"strings"
 )
 
@@ -591,129 +593,26 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 		i++
 	}
 
-	// Create a map to store block positions and states for efficient lookup
-	blockMap := make(map[string]int)
+	// Pre-allocate blocks slice
+	sf.Blocks = make([]StandardBlock, 0, len(worldEdit.BlockEntities))
 
-	// Process blocks if BlockData is not empty
-	if len(worldEdit.BlockData) > 0 {
-		// Get the total volume of the schematic
-		totalVolume := worldEdit.Width * worldEdit.Height * worldEdit.Length
-
-		// Pre-allocate blocks slice with estimated capacity
-		estimatedNonAirBlocks := totalVolume / 2 // Estimate that ~50% of blocks are non-air
-		sf.Blocks = make([]StandardBlock, 0, estimatedNonAirBlocks)
-
-		// Decode the BlockData
-		// BlockData is typically a base64-encoded byte array where each byte represents a palette index
-		// For simplicity, we'll assume it's already decoded and just iterate through the characters
-		for i := 0; i < len(worldEdit.BlockData) && i < totalVolume; i++ {
-			// Calculate the 3D position from the 1D index
-			// WorldEdit uses YZX order
-			x := i % worldEdit.Width
-			z := (i / worldEdit.Width) % worldEdit.Length
-			y := i / (worldEdit.Width * worldEdit.Length)
-
-			// Get the palette index for this position
-			paletteIndex := int(worldEdit.BlockData[i])
-
-			// Skip air blocks (usually palette index 0)
-			if paletteIndex == 0 {
-				continue
-			}
-
-			// Create and add a StandardBlock
-			block := StandardBlock{
-				Position: StandardBlockPosition{
-					X: float64(x),
-					Y: float64(y),
-					Z: float64(z),
-				},
-				State: paletteIndex,
-			}
-
-			sf.Blocks = append(sf.Blocks, block)
-
-			// Store the block in the map for block entity lookup
-			blockMap[fmt.Sprintf("%d,%d,%d", x, y, z)] = len(sf.Blocks) - 1
-		}
-	}
-
-	// If no blocks were found in BlockData but there are block entities, create blocks from them
-	if len(sf.Blocks) == 0 && len(worldEdit.BlockEntities) > 0 {
-		// Use the first palette entry for all blocks (usually not air)
-		paletteIndex := 1
-		if len(sf.Palette) <= 1 {
-			// If the palette is empty or only has air, add a default block
-			sf.Palette[len(sf.Palette)] = StandardPalette{
-				Name:       "minecraft:stone",
-				Properties: make(map[string]string),
-			}
-			paletteIndex = 1
-		}
-
-		// Pre-allocate blocks slice
-		sf.Blocks = make([]StandardBlock, 0, len(worldEdit.BlockEntities))
-
-		// Create blocks for each block entity
-		for _, blockEntity := range worldEdit.BlockEntities {
+	// Create blocks for each block entity
+	for _, blockEntity := range worldEdit.BlockEntities {
+		if id, ok := blockEntity["Id"].(string); ok {
 			// Extract position
 			x, y, z := extractBlockEntityPosition(blockEntity)
 
 			// Create and add a StandardBlock
 			block := StandardBlock{
 				Position: StandardBlockPosition{
-					X: float64(x),
-					Y: float64(y),
-					Z: float64(z),
+					X: x,
+					Y: y,
+					Z: z,
 				},
-				State: paletteIndex,
+				ID: id,
 			}
 
 			sf.Blocks = append(sf.Blocks, block)
-
-			// Store the block in the map for block entity lookup
-			blockMap[fmt.Sprintf("%d,%d,%d", x, y, z)] = len(sf.Blocks) - 1
-		}
-	}
-
-	// Associate block entities with blocks
-	for _, blockEntity := range worldEdit.BlockEntities {
-		// Extract position
-		x, y, z := extractBlockEntityPosition(blockEntity)
-
-		key := fmt.Sprintf("%d,%d,%d", x, y, z)
-		if blockIndex, ok := blockMap[key]; ok && blockIndex < len(sf.Blocks) {
-			// Set the NBT data for the block
-			sf.Blocks[blockIndex].NBT = blockEntity
-		}
-	}
-
-	// Convert block entities to tile entities that don't have associated blocks
-	for _, blockEntity := range worldEdit.BlockEntities {
-		// Extract position
-		x, y, z := extractBlockEntityPosition(blockEntity)
-
-		// Check if this tile entity is already associated with a block
-		key := fmt.Sprintf("%d,%d,%d", x, y, z)
-		if _, ok := blockMap[key]; !ok {
-			// Extract ID
-			id := "unknown"
-			if idVal, ok := blockEntity["id"].(string); ok {
-				id = idVal
-			}
-
-			// Create a StandardBlock for the tile entity
-			tileEntityBlock := StandardBlock{
-				Type: "tile_entity",
-				ID:   id,
-				Position: StandardBlockPosition{
-					X: float64(x),
-					Y: float64(y),
-					Z: float64(z),
-				},
-				NBT: blockEntity,
-			}
-			sf.Blocks = append(sf.Blocks, tileEntityBlock)
 		}
 	}
 
@@ -721,15 +620,24 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 }
 
 // Helper function to extract position from a block entity
-func extractBlockEntityPosition(blockEntity map[string]any) (x, y, z int) {
-	if xVal, ok := blockEntity["x"].(float64); ok {
-		x = int(xVal)
-	}
-	if yVal, ok := blockEntity["y"].(float64); ok {
-		y = int(yVal)
-	}
-	if zVal, ok := blockEntity["z"].(float64); ok {
-		z = int(zVal)
+func extractBlockEntityPosition(blockEntity map[string]any) (x, y, z float64) {
+	if vals, ok := blockEntity["Pos"].([]interface{}); ok {
+		if len(vals) >= 3 {
+			if val, ok2 := vals[0].(float64); ok2 {
+				x = val
+			} else {
+				log.Println(reflect.TypeOf(vals[0]))
+			}
+			if val, ok2 := vals[1].(float64); ok2 {
+				y = val
+			}
+			if val, ok2 := vals[2].(float64); ok2 {
+				z = val
+			}
+			return x, y, z
+		}
+	} else {
+		log.Println(reflect.TypeOf(blockEntity["Pos"]))
 	}
 	return
 }
