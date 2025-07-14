@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/uberswe/mcnbt"
 	"log"
-	"mcnbt"
 	"os"
 	"strings"
 )

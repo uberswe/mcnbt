@@ -117,7 +117,7 @@ type StandardPalette struct {
 
 // ConvertToStandard converts any supported format to the StandardFormat
 func ConvertToStandard(data interface{}) (*StandardFormat, error) {
-	// Handle *interface{} type which comes from decodeAny in decoder.go
+	// Handle *interface{} type which comes from DecodeAny in decoder.go
 	if ptr, ok := data.(*interface{}); ok {
 		// Dereference the pointer to get the actual value
 		return ConvertToStandard(*ptr)

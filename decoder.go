@@ -77,7 +77,7 @@ func ParseAnyFromFileAsJSON(f string) (interface{}, error) {
 	}
 
 	// Decode the data
-	res, err := decodeAny(data)
+	res, err := DecodeAny(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode file %s: %w", f, err)
 	}
@@ -85,7 +85,7 @@ func ParseAnyFromFileAsJSON(f string) (interface{}, error) {
 	return res, nil
 }
 
-func decodeAny(data []byte) (interface{}, error) {
+func DecodeAny(data []byte) (interface{}, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty data")
 	}
