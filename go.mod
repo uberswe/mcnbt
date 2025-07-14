@@ -1,4 +1,4 @@
-module mcnbt
+module github.com/uberswe/mcnbt
 
 go 1.24
 
