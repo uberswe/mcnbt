@@ -224,24 +224,24 @@ func ConvertFromStandard(standard *StandardFormat, format string) (interface{}, 
 		// Ensure the blocks field is not empty
 		if len(create.Blocks) == 0 && len(standard.Blocks) > 0 {
 			// If blocks field is empty but there should be blocks, create them
-			create.Blocks = make([]interface{}, len(standard.Blocks))
+			create.Blocks = make([]CreateBlock, len(standard.Blocks))
 			for i, block := range standard.Blocks {
 				// Create a map for each block
-				blockMap := make(map[string]interface{})
+				blockMap := CreateBlock{}
 
 				// Set position, preserving the original position
-				blockMap["pos"] = []int{
+				blockMap.Pos = []int{
 					int(block.Position.X) - standard.Position.X, // Adjust X position
 					int(block.Position.Y) - standard.Position.Y, // Adjust Y position
 					int(block.Position.Z) - standard.Position.Z, // Adjust Z position
 				}
 
 				// Set state (palette index)
-				blockMap["state"] = block.State
+				blockMap.State = block.State
 
 				// Add NBT data if available
 				if block.NBT != nil {
-					blockMap["nbt"] = block.NBT
+					blockMap.Nbt = block.NBT
 				}
 
 				// Add the block to the list
@@ -539,11 +539,6 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 	if len(create.Blocks) > 0 {
 		// Process each block
 		for _, block := range create.Blocks {
-			// Skip nil blocks
-			if block == nil {
-				continue
-			}
-
 			// Get block as map
 			blockMap := getBlockAsMap(block)
 			if blockMap == nil {
@@ -565,46 +560,13 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 				NBT:   extractBlockNBT(blockMap),
 			}
 
+			for i, p := range sf.Palette {
+				if i == state {
+					sb.ID = p.Name
+				}
+			}
+
 			sf.Blocks = append(sf.Blocks, sb)
-		}
-	}
-
-	// If no blocks were found but there are tile entities, create blocks from them
-	if len(sf.Blocks) == 0 && len(create.TileEntities) > 0 {
-		// Use the first palette entry for all blocks (usually not air)
-		paletteIndex := 1
-		if len(sf.Palette) <= 1 {
-			// If the palette is empty or only has air, add a default block
-			sf.Palette[len(sf.Palette)] = StandardPalette{
-				Name:       "minecraft:stone",
-				Properties: make(map[string]string),
-			}
-			paletteIndex = 1
-		}
-
-		// Create blocks for each tile entity
-		for _, tileEntity := range create.TileEntities {
-			// Skip tile entities with invalid position
-			if len(tileEntity.Pos) < 3 {
-				continue
-			}
-
-			// Create and add a StandardBlock
-			block := StandardBlock{
-				Position: StandardBlockPosition{
-					X: float64(tileEntity.Pos[0] + sf.Position.X),
-					Y: float64(tileEntity.Pos[1] + sf.Position.Y),
-					Z: float64(tileEntity.Pos[2] + sf.Position.Z),
-				},
-				State: paletteIndex,
-			}
-
-			// Add NBT data if available
-			if len(tileEntity.NBT) > 0 {
-				block.NBT = tileEntity.NBT
-			}
-
-			sf.Blocks = append(sf.Blocks, block)
 		}
 	}
 
@@ -695,7 +657,7 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 }
 
 // Helper function to find the minimum position from blocks
-func findMinPosition(blocks []interface{}) (minX, minY, minZ int) {
+func findMinPosition(blocks []CreateBlock) (minX, minY, minZ int) {
 	// Default to 0,0,0
 	minX, minY, minZ = 0, 0, 0
 
@@ -709,29 +671,18 @@ func findMinPosition(blocks []interface{}) (minX, minY, minZ int) {
 
 	// Find the minimum position
 	for _, block := range blocks {
-		// Skip nil blocks or non-map blocks
-		blockMap, ok := block.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Extract position
-		pos, ok := blockMap["pos"].([]interface{})
-		if !ok || len(pos) < 3 {
-			continue
-		}
 
 		// Update minimum position
-		if x, ok := pos[0].(float64); ok && int(x) < minX {
-			minX = int(x)
+		if block.Pos[0] < minX {
+			minX = block.Pos[0]
 			foundValidPosition = true
 		}
-		if y, ok := pos[1].(float64); ok && int(y) < minY {
-			minY = int(y)
+		if block.Pos[1] < minY {
+			minY = block.Pos[1]
 			foundValidPosition = true
 		}
-		if z, ok := pos[2].(float64); ok && int(z) < minZ {
-			minZ = int(z)
+		if block.Pos[2] < minZ {
+			minZ = block.Pos[2]
 			foundValidPosition = true
 		}
 	}
@@ -1069,26 +1020,26 @@ func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 	}
 
 	// Convert blocks from standard format to Create format
-	create.Blocks = make([]interface{}, len(standard.Blocks))
+	create.Blocks = make([]CreateBlock, len(standard.Blocks))
 
 	// Iterate through the standard blocks and convert them to Create blocks
 	for i, block := range standard.Blocks {
 		// Create a map for each block
-		blockMap := make(map[string]interface{})
+		blockMap := CreateBlock{}
 
 		// Set position, preserving the original position
-		blockMap["pos"] = []int{
+		blockMap.Pos = []int{
 			int(block.Position.X) - standard.Position.X, // Adjust X position
 			int(block.Position.Y) - standard.Position.Y, // Adjust Y position
 			int(block.Position.Z) - standard.Position.Z, // Adjust Z position
 		}
 
 		// Set state (palette index)
-		blockMap["state"] = block.State
+		blockMap.State = block.State
 
 		// Add NBT data if available
 		if block.NBT != nil {
-			blockMap["nbt"] = block.NBT
+			blockMap.Nbt = block.NBT
 		}
 
 		// Add the block to the list

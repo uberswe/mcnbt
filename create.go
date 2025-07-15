@@ -84,8 +84,14 @@ type CreateTileEntity struct {
 type CreateNBT struct {
 	Size         []int              `json:"size"`
 	Entities     []CreateEntity     `json:"entities"`
-	Blocks       []interface{}      `json:"blocks"`
+	Blocks       []CreateBlock      `json:"blocks"`
 	TileEntities []CreateTileEntity `json:"tileEntities,omitempty"`
 	Palette      []CreatePalette    `json:"palette"`
 	DataVersion  int                `json:"DataVersion"`
+}
+
+type CreateBlock struct {
+	Nbt   interface{} `json:"nbt"`
+	Pos   []int       `json:"pos"`
+	State int         `json:"state"`
 }
