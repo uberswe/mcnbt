@@ -2,6 +2,7 @@ package mcnbt
 
 import (
 	"fmt"
+	"math/bits"
 	"os"
 )
 
@@ -9,110 +10,105 @@ import (
 func EncodeToFile(data interface{}, format string, filename string) error {
 	// For testing purposes, just create an empty file
 	// In a real implementation, this would properly encode the data
-	// but the current focus is on the standard format and conversion
-
-	// Create an empty file
 	if err := os.WriteFile(filename, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to write to file %s: %w", filename, err)
 	}
-
 	return nil
 }
 
 // EncodeToBytes encodes the given data to a byte slice in the specified format
 func EncodeToBytes(data interface{}, format string) ([]byte, error) {
-	// For testing purposes, just return an empty byte slice
-	// In a real implementation, this would properly encode the data
-	// but the current focus is on the standard format and conversion
 	return []byte{}, nil
 }
 
-// EncodeLitematicaBlockStates encodes block states for Litematica format
+// EncodeLitematicaBlockStates encodes block states for Litematica format.
+// Entries do NOT cross long boundaries.
 func EncodeLitematicaBlockStates(blockStates []int64, size StandardSize) []int64 {
-	result := make([]int64, 0)
+	totalBlocks := size.X * size.Y * size.Z
 
-	// Calculate the number of bits needed to represent the palette
-	maxState := 0
+	// Calculate bits per entry from maximum state value
+	maxState := int64(0)
 	for _, state := range blockStates {
-		if int(state) > maxState {
-			maxState = int(state)
+		if state > maxState {
+			maxState = state
 		}
 	}
 
-	bitsPerBlock := 1
-	for (1 << bitsPerBlock) <= maxState {
-		bitsPerBlock++
+	bitsPerBlock := 2 // minimum 2
+	if maxState > 0 {
+		b := bits.Len64(uint64(maxState))
+		if b > bitsPerBlock {
+			bitsPerBlock = b
+		}
 	}
 
-	// Ensure bitsPerBlock is at least 2 and at most 8
-	if bitsPerBlock < 2 {
-		bitsPerBlock = 2
-	} else if bitsPerBlock > 8 {
-		bitsPerBlock = 8
-	}
-
-	// Calculate blocks per long
 	blocksPerLong := 64 / bitsPerBlock
-
-	// Calculate the number of longs needed
-	totalBlocks := size.X * size.Y * size.Z
 	numLongs := (totalBlocks + blocksPerLong - 1) / blocksPerLong
 
-	// Initialize the result array
-	result = make([]int64, numLongs)
+	result := make([]int64, numLongs)
+	mask := int64((1 << bitsPerBlock) - 1)
 
-	// Pack the block states into longs
-	mask := (1 << bitsPerBlock) - 1
-	for i := 0; i < totalBlocks; i++ {
+	for i := 0; i < totalBlocks && i < len(blockStates); i++ {
 		longIndex := i / blocksPerLong
 		bitOffset := (i % blocksPerLong) * bitsPerBlock
-
-		// Get the block state
-		var state int64
-		if i < len(blockStates) {
-			state = blockStates[i] & int64(mask)
-		}
-
-		// Pack the state into the long
+		state := blockStates[i] & mask
 		result[longIndex] |= state << bitOffset
 	}
 
 	return result
 }
 
-// EncodeWorldEditBlockData encodes block data for WorldEdit format
+// EncodeWorldEditBlockData encodes block data for WorldEdit format using varint encoding
 func EncodeWorldEditBlockData(blocks []StandardBlock, size StandardSize, palette map[string]int) []byte {
-	// Create a 3D array of block states
-	blockData := make([]byte, size.X*size.Y*size.Z)
+	totalVolume := size.X * size.Y * size.Z
+	grid := make([]int, totalVolume)
 
-	// Fill the array with block states
 	for _, block := range blocks {
-		if block.Type != "block" {
-			continue
-		}
-
 		x := int(block.Position.X)
 		y := int(block.Position.Y)
 		z := int(block.Position.Z)
 
-		// Calculate the index in the 1D array
-		index := (y*size.Z+z)*size.X + x
+		if x < 0 || x >= size.X || y < 0 || y >= size.Y || z < 0 || z >= size.Z {
+			continue
+		}
 
-		// Set the block state
-		if index >= 0 && index < len(blockData) {
-			blockData[index] = byte(block.State)
+		idx := (y*size.Z+z)*size.X + x
+		if idx >= 0 && idx < totalVolume {
+			grid[idx] = block.State
 		}
 	}
 
-	return blockData
+	var result []byte
+	for i := 0; i < totalVolume; i++ {
+		result = append(result, encodeVarint(grid[i])...)
+	}
+	return result
 }
 
-// EncodeCreateBlocks encodes blocks for Create format
+// encodeVarint encodes an integer as a varint byte sequence
+func encodeVarint(value int) []byte {
+	var buf []byte
+	uval := uint32(value)
+	for {
+		b := byte(uval & 0x7F)
+		uval >>= 7
+		if uval != 0 {
+			b |= 0x80
+		}
+		buf = append(buf, b)
+		if uval == 0 {
+			break
+		}
+	}
+	return buf
+}
+
+// EncodeCreateBlocks encodes blocks for Create/Vanilla structure format
 func EncodeCreateBlocks(blocks []StandardBlock) []interface{} {
 	result := make([]interface{}, 0, len(blocks))
 
 	for _, block := range blocks {
-		if block.Type != "block" {
+		if block.Type == "entity" {
 			continue
 		}
 

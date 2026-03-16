@@ -9,7 +9,7 @@ type WorldEditMetadata struct {
 
 // WorldEditNBT represents a WorldEdit schematic
 type WorldEditNBT struct {
-	BlockData     string            `json:"BlockData"`
+	BlockData     []byte            `json:"BlockData"`
 	BlockEntities []map[string]any  `json:"BlockEntities"`
 	DataVersion   int               `json:"DataVersion"`
 	Height        int               `json:"Height"`

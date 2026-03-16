@@ -6,14 +6,3 @@ type Coordinate struct {
 	Y int `json:"y"`
 	Z int `json:"z"`
 }
-
-// BlockStateProperty represents the properties of a block state
-type BlockStateProperty struct {
-	Snowy string `json:"snowy"`
-}
-
-// BlockStatePalette represents a block state in the palette
-type BlockStatePalette struct {
-	Name       string             `json:"Name"`
-	Properties BlockStateProperty `json:"Properties,omitempty"`
-}

@@ -3,8 +3,7 @@ package mcnbt
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"reflect"
+	"math/bits"
 	"strings"
 )
 
@@ -29,7 +28,7 @@ type StandardFormat struct {
 	Blocks []StandardBlock `json:"blocks"`
 
 	// Palette data
-	Palette map[int]StandardPalette `json:"Palette"`
+	Palette map[int]StandardPalette `json:"palette"`
 
 	// Original format type
 	OriginalFormat string `json:"originalFormat"`
@@ -215,41 +214,7 @@ func ConvertFromStandard(standard *StandardFormat, format string) (interface{}, 
 	case "worldedit":
 		return convertStandardToWorldEdit(standard)
 	case "create":
-		// Create format requires special handling to ensure blocks are preserved
-		create, err := convertStandardToCreate(standard)
-		if err != nil {
-			return nil, err
-		}
-
-		// Ensure the blocks field is not empty
-		if len(create.Blocks) == 0 && len(standard.Blocks) > 0 {
-			// If blocks field is empty but there should be blocks, create them
-			create.Blocks = make([]CreateBlock, len(standard.Blocks))
-			for i, block := range standard.Blocks {
-				// Create a map for each block
-				blockMap := CreateBlock{}
-
-				// Set position, preserving the original position
-				blockMap.Pos = []int{
-					int(block.Position.X) - standard.Position.X, // Adjust X position
-					int(block.Position.Y) - standard.Position.Y, // Adjust Y position
-					int(block.Position.Z) - standard.Position.Z, // Adjust Z position
-				}
-
-				// Set state (palette index)
-				blockMap.State = block.State
-
-				// Add NBT data if available
-				if block.NBT != nil {
-					blockMap.Nbt = block.NBT
-				}
-
-				// Add the block to the list
-				create.Blocks[i] = blockMap
-			}
-		}
-
-		return create, nil
+		return convertStandardToCreate(standard)
 	default:
 		return nil, fmt.Errorf("unsupported output format: %s", format)
 	}
@@ -262,15 +227,9 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	}
 
 	sf := &StandardFormat{
-		// Set original format
 		OriginalFormat: "litematica",
-
-		// Set version information
-		DataVersion: litematica.MinecraftDataVersion,
-		Version:     litematica.Version,
-
-		// Initialize slices
-		Blocks: make([]StandardBlock, 0),
+		DataVersion:    litematica.MinecraftDataVersion,
+		Version:        litematica.Version,
 	}
 
 	// Set metadata
@@ -283,7 +242,6 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	sf.Metadata.TotalVolume = litematica.Metadata.TotalVolume
 	sf.Metadata.PreviewImageData = litematica.Metadata.PreviewImageData
 
-	// Get the first region from the Regions map
 	if len(litematica.Regions) == 0 {
 		return nil, fmt.Errorf("no regions found in litematica file")
 	}
@@ -295,11 +253,14 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 		break
 	}
 
-	// Set size and position
-	sf.Size.X = region.Size.X
-	// Handle negative Y size in Litematica format
-	sf.Size.Y = abs(region.Size.Y) // Use abs function to handle negative Y size
-	sf.Size.Z = region.Size.Z
+	// Handle negative sizes (Litematica uses negative sizes to indicate direction)
+	sizeX := abs(region.Size.X)
+	sizeY := abs(region.Size.Y)
+	sizeZ := abs(region.Size.Z)
+
+	sf.Size.X = sizeX
+	sf.Size.Y = sizeY
+	sf.Size.Z = sizeZ
 
 	sf.Position.X = region.Position.X
 	sf.Position.Y = region.Position.Y
@@ -308,55 +269,119 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	// Convert palette
 	sf.Palette = make(map[int]StandardPalette, len(region.BlockStatePalette))
 	for i, palette := range region.BlockStatePalette {
+		props := palette.Properties
+		if props == nil {
+			props = make(map[string]string)
+		}
 		sf.Palette[i] = StandardPalette{
 			Name:       palette.Name,
-			Properties: palette.Properties,
+			Properties: props,
 		}
 	}
 
-	if len(sf.Palette) <= 1 {
-		// If the palette is empty or only has air, add a default block
-		sf.Palette[len(sf.Palette)] = StandardPalette{
-			Name:       "minecraft:stone",
-			Properties: make(map[string]string),
+	// Decode the packed BlockStates int64 array
+	totalVolume := sizeX * sizeY * sizeZ
+	paletteSize := len(region.BlockStatePalette)
+
+	// Calculate bits per entry
+	bitsPerEntry := 2 // minimum 2
+	if paletteSize > 0 {
+		b := bits.Len(uint(paletteSize - 1))
+		if b > bitsPerEntry {
+			bitsPerEntry = b
 		}
 	}
 
-	// Pre-allocate blocks slice
-	sf.Blocks = make([]StandardBlock, 0, len(region.TileEntities))
-
-	// Create blocks for each tile entity
-	for _, tileEntity := range region.TileEntities {
-		// Create and add a StandardBlock
-		block := StandardBlock{
-			Position: StandardBlockPosition{
-				X: float64(tileEntity.X),
-				Y: float64(tileEntity.Y),
-				Z: float64(tileEntity.Z),
-			},
-			ID: tileEntity.Id,
+	// Convert BlockStates from []interface{} to []int64
+	longs := make([]int64, len(region.BlockStates))
+	for i, v := range region.BlockStates {
+		switch val := v.(type) {
+		case int64:
+			longs[i] = val
+		case float64:
+			longs[i] = int64(val)
+		case int:
+			longs[i] = int64(val)
+		case int32:
+			longs[i] = int64(val)
 		}
+	}
 
-		// TODO need to copy properties like orientation
+	// Unpack palette indices from the long array
+	// Litematica: entries do NOT cross long boundaries
+	entriesPerLong := 64 / bitsPerEntry
+	mask := int64((1 << bitsPerEntry) - 1)
 
-		sf.Blocks = append(sf.Blocks, block)
+	paletteIndices := make([]int, totalVolume)
+	for i := 0; i < totalVolume; i++ {
+		longIndex := i / entriesPerLong
+		bitOffset := (i % entriesPerLong) * bitsPerEntry
+
+		if longIndex < len(longs) {
+			paletteIndices[i] = int((longs[longIndex] >> bitOffset) & mask)
+		}
+	}
+
+	// Build a map of tile entity positions for merging
+	tileEntityMap := make(map[[3]int]LitematicaTileEntity)
+	for _, te := range region.TileEntities {
+		key := [3]int{te.X, te.Y, te.Z}
+		tileEntityMap[key] = te
+	}
+
+	// Convert XZY-ordered indices to blocks with positions
+	// Litematica order: iterate X, then Z, then Y (innermost)
+	sf.Blocks = make([]StandardBlock, 0, totalVolume)
+	idx := 0
+	for y := 0; y < sizeY; y++ {
+		for z := 0; z < sizeZ; z++ {
+			for x := 0; x < sizeX; x++ {
+				if idx >= len(paletteIndices) {
+					break
+				}
+				paletteIdx := paletteIndices[idx]
+				idx++
+
+				block := StandardBlock{
+					Type:  "block",
+					State: paletteIdx,
+					Position: StandardBlockPosition{
+						X: float64(x),
+						Y: float64(y),
+						Z: float64(z),
+					},
+				}
+
+				// Check if there's a tile entity at this position
+				key := [3]int{x, y, z}
+				if te, ok := tileEntityMap[key]; ok {
+					block.Type = "block_entity"
+					block.ID = te.Id
+					// Build NBT from tile entity fields
+					nbtData := make(map[string]interface{})
+					nbtData["id"] = te.Id
+					nbtData["x"] = te.X
+					nbtData["y"] = te.Y
+					nbtData["z"] = te.Z
+					if len(te.Items) > 0 {
+						nbtData["Items"] = te.Items
+					}
+					block.NBT = nbtData
+				}
+
+				// Set the block ID from palette
+				if p, ok := sf.Palette[paletteIdx]; ok {
+					if block.ID == "" {
+						block.ID = p.Name
+					}
+				}
+
+				sf.Blocks = append(sf.Blocks, block)
+			}
+		}
 	}
 
 	return sf, nil
-}
-
-// Helper function to get palette index from various types
-func getPaletteIndex(value interface{}) (int, bool) {
-	switch v := value.(type) {
-	case float64:
-		return int(v), true
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	default:
-		return 0, false
-	}
 }
 
 // Helper function to get absolute value of an integer
@@ -374,125 +399,192 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 	}
 
 	sf := &StandardFormat{
-		// Set original format
 		OriginalFormat: "worldedit",
-
-		// Set version information
-		DataVersion: worldEdit.DataVersion,
-		Version:     worldEdit.Version,
-
-		// Initialize slices
-		Blocks: make([]StandardBlock, 0),
+		DataVersion:    worldEdit.DataVersion,
+		Version:        worldEdit.Version,
 	}
 
-	// Set size
 	sf.Size.X = worldEdit.Width
 	sf.Size.Y = worldEdit.Height
 	sf.Size.Z = worldEdit.Length
 
-	// Set position/offset
 	if len(worldEdit.Offset) >= 3 {
 		sf.Position.X = worldEdit.Offset[0]
 		sf.Position.Y = worldEdit.Offset[1]
 		sf.Position.Z = worldEdit.Offset[2]
 	}
 
-	// Convert palette
+	// Convert palette — WorldEdit palette maps "name[props]" → index
+	// The map VALUES are the palette indices, not iteration order
 	sf.Palette = make(map[int]StandardPalette, len(worldEdit.Palette))
-	i := 0
-	for name := range worldEdit.Palette {
-		// Parse the name and properties
-		// In WorldEdit, the block name might include properties in the format "minecraft:block[property1=value1,property2=value2]"
-		nameAndProps := strings.SplitN(name, "[", 2)
-		blockName := nameAndProps[0]
-		properties := make(map[string]string)
-
-		if len(nameAndProps) > 1 {
-			// Remove the closing bracket
-			propsStr := strings.TrimSuffix(nameAndProps[1], "]")
-			// Split by comma to get individual properties
-			props := strings.Split(propsStr, ",")
-			for _, prop := range props {
-				// Split by equal sign to get property name and value
-				kv := strings.SplitN(prop, "=", 2)
-				if len(kv) == 2 {
-					properties[kv[0]] = kv[1]
-				}
-			}
-		}
-
-		sf.Palette[i] = StandardPalette{
+	for name, paletteIndex := range worldEdit.Palette {
+		blockName, properties := parseWorldEditBlockName(name)
+		sf.Palette[paletteIndex] = StandardPalette{
 			Name:       blockName,
 			Properties: properties,
 		}
-		i++
 	}
 
-	// Pre-allocate blocks slice
-	sf.Blocks = make([]StandardBlock, 0, len(worldEdit.BlockEntities))
+	// Decode the varint-encoded BlockData byte array
+	// WorldEdit BlockData is a varint-encoded stream iterated in YZX order
+	totalVolume := worldEdit.Width * worldEdit.Height * worldEdit.Length
+	paletteIndices := make([]int, 0, totalVolume)
 
-	// Create blocks for each block entity
-	for _, blockEntity := range worldEdit.BlockEntities {
-		if id, ok := blockEntity["Id"].(string); ok {
-			// Extract position
-			x, y, z := extractBlockEntityPosition(blockEntity)
+	blockDataBytes := worldEdit.BlockData
+	offset := 0
+	for offset < len(blockDataBytes) && len(paletteIndices) < totalVolume {
+		value, bytesRead := readVarint(blockDataBytes, offset)
+		if bytesRead == 0 {
+			break
+		}
+		offset += bytesRead
+		paletteIndices = append(paletteIndices, value)
+	}
 
-			// Create and add a StandardBlock
-			block := StandardBlock{
-				Position: StandardBlockPosition{
-					X: x,
-					Y: y,
-					Z: z,
-				},
-				ID: id,
+	// Build a map of block entity positions for merging
+	blockEntityMap := make(map[[3]int]map[string]interface{})
+	for _, be := range worldEdit.BlockEntities {
+		x, y, z := extractBlockEntityPosition(be)
+		key := [3]int{int(x), int(y), int(z)}
+		blockEntityMap[key] = be
+	}
+
+	// Convert YZX-ordered indices to blocks with positions
+	sf.Blocks = make([]StandardBlock, 0, totalVolume)
+	idx := 0
+	for y := 0; y < worldEdit.Height; y++ {
+		for z := 0; z < worldEdit.Length; z++ {
+			for x := 0; x < worldEdit.Width; x++ {
+				if idx >= len(paletteIndices) {
+					break
+				}
+				paletteIdx := paletteIndices[idx]
+				idx++
+
+				block := StandardBlock{
+					Type:  "block",
+					State: paletteIdx,
+					Position: StandardBlockPosition{
+						X: float64(x),
+						Y: float64(y),
+						Z: float64(z),
+					},
+				}
+
+				// Check if there's a block entity at this position
+				key := [3]int{x, y, z}
+				if be, ok := blockEntityMap[key]; ok {
+					block.Type = "block_entity"
+					if id, ok := be["Id"].(string); ok {
+						block.ID = id
+					}
+					block.NBT = be
+				}
+
+				// Set the block ID from palette
+				if p, ok := sf.Palette[paletteIdx]; ok {
+					if block.ID == "" {
+						block.ID = p.Name
+					}
+				}
+
+				sf.Blocks = append(sf.Blocks, block)
 			}
-
-			sf.Blocks = append(sf.Blocks, block)
 		}
 	}
 
 	return sf, nil
 }
 
+// parseWorldEditBlockName parses "minecraft:block[prop1=val1,prop2=val2]" into name and properties
+func parseWorldEditBlockName(name string) (string, map[string]string) {
+	nameAndProps := strings.SplitN(name, "[", 2)
+	blockName := nameAndProps[0]
+	properties := make(map[string]string)
+
+	if len(nameAndProps) > 1 {
+		propsStr := strings.TrimSuffix(nameAndProps[1], "]")
+		props := strings.Split(propsStr, ",")
+		for _, prop := range props {
+			kv := strings.SplitN(prop, "=", 2)
+			if len(kv) == 2 {
+				properties[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	return blockName, properties
+}
+
+// readVarint reads a varint from a byte slice at the given offset.
+// Returns the decoded value and the number of bytes consumed.
+func readVarint(data []byte, offset int) (int, int) {
+	result := 0
+	shift := 0
+	bytesRead := 0
+
+	for offset < len(data) {
+		b := data[offset]
+		offset++
+		bytesRead++
+
+		result |= int(b&0x7F) << shift
+		shift += 7
+
+		if b&0x80 == 0 {
+			break
+		}
+	}
+
+	return result, bytesRead
+}
+
 // Helper function to extract position from a block entity
 func extractBlockEntityPosition(blockEntity map[string]any) (x, y, z float64) {
-	if vals, ok := blockEntity["Pos"].([]interface{}); ok {
-		if len(vals) >= 3 {
-			if val, ok2 := vals[0].(float64); ok2 {
-				x = val
-			} else {
-				log.Println(reflect.TypeOf(vals[0]))
-			}
-			if val, ok2 := vals[1].(float64); ok2 {
-				y = val
-			}
-			if val, ok2 := vals[2].(float64); ok2 {
-				z = val
-			}
-			return x, y, z
-		}
-	} else {
-		log.Println(reflect.TypeOf(blockEntity["Pos"]))
+	if vals, ok := blockEntity["Pos"].([]interface{}); ok && len(vals) >= 3 {
+		x, _ = toFloat64(vals[0])
+		y, _ = toFloat64(vals[1])
+		z, _ = toFloat64(vals[2])
+		return
+	}
+	// Try individual x/y/z fields
+	if v, ok := blockEntity["x"]; ok {
+		x, _ = toFloat64(v)
+	}
+	if v, ok := blockEntity["y"]; ok {
+		y, _ = toFloat64(v)
+	}
+	if v, ok := blockEntity["z"]; ok {
+		z, _ = toFloat64(v)
 	}
 	return
 }
 
-// convertCreateToStandard converts a CreateNBT to StandardFormat
+func toFloat64(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int32:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case float32:
+		return float64(val), true
+	}
+	return 0, false
+}
+
+// convertCreateToStandard converts a CreateNBT (vanilla structure format) to StandardFormat
 func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 	if create == nil {
 		return nil, fmt.Errorf("create data is nil")
 	}
 
 	sf := &StandardFormat{
-		// Set original format
 		OriginalFormat: "create",
-
-		// Set version information
-		DataVersion: create.DataVersion,
-		Version:     0, // Create format doesn't have a version field
-
-		// Initialize slices
-		Blocks: make([]StandardBlock, 0),
+		DataVersion:    create.DataVersion,
 	}
 
 	// Set size
@@ -500,84 +592,99 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 		sf.Size.X = create.Size[0]
 		sf.Size.Y = create.Size[1]
 		sf.Size.Z = create.Size[2]
-	} else {
-		// Default size if not provided
-		sf.Size.X = 1
-		sf.Size.Y = 1
-		sf.Size.Z = 1
 	}
 
-	// Find minimum position from blocks (if available)
-	minX, minY, minZ := findMinPosition(create.Blocks)
-
-	// Set position
-	sf.Position.X = minX
-	sf.Position.Y = minY
-	sf.Position.Z = minZ
-
-	// Convert palette
+	// Convert palette — Properties is now map[string]string
 	sf.Palette = make(map[int]StandardPalette, len(create.Palette))
 	for i, palette := range create.Palette {
+		props := palette.Properties
+		if props == nil {
+			props = make(map[string]string)
+		}
 		sf.Palette[i] = StandardPalette{
 			Name:       palette.Name,
-			Properties: make(map[string]string),
-		}
-		// Add properties if they exist
-		if palette.Properties.Axis != "" {
-			sf.Palette[i].Properties["axis"] = palette.Properties.Axis
+			Properties: props,
 		}
 	}
 
-	// Pre-allocate blocks slice with estimated capacity
-	estimatedBlocks := len(create.Blocks)
-	if estimatedBlocks == 0 && len(create.TileEntities) > 0 {
-		estimatedBlocks = len(create.TileEntities)
-	}
-	sf.Blocks = make([]StandardBlock, 0, estimatedBlocks)
-
-	// Process blocks if available
-	if len(create.Blocks) > 0 {
-		// Process each block
-		for _, block := range create.Blocks {
-			// Get block as map
-			blockMap := getBlockAsMap(block)
-			if blockMap == nil {
-				continue
-			}
-
-			// Extract position and state
-			posX, posY, posZ := extractBlockPosition(blockMap)
-			state := extractBlockState(blockMap)
-
-			// Create and add a StandardBlock
-			sb := StandardBlock{
-				Position: StandardBlockPosition{
-					X: float64(posX + sf.Position.X),
-					Y: float64(posY + sf.Position.Y),
-					Z: float64(posZ + sf.Position.Z),
-				},
-				State: state,
-				NBT:   extractBlockNBT(blockMap),
-			}
-
-			for i, p := range sf.Palette {
-				if i == state {
-					sb.ID = p.Name
-				}
-			}
-
-			sf.Blocks = append(sf.Blocks, sb)
+	// Build a map of tile entity positions for merging
+	tileEntityMap := make(map[[3]int]CreateTileEntity)
+	for _, te := range create.TileEntities {
+		if len(te.Pos) >= 3 {
+			key := [3]int{te.Pos[0], te.Pos[1], te.Pos[2]}
+			tileEntityMap[key] = te
 		}
+	}
+
+	// Process blocks
+	sf.Blocks = make([]StandardBlock, 0, len(create.Blocks))
+	for _, block := range create.Blocks {
+		if len(block.Pos) < 3 {
+			continue
+		}
+
+		sb := StandardBlock{
+			Type:  "block",
+			State: block.State,
+			Position: StandardBlockPosition{
+				X: float64(block.Pos[0]),
+				Y: float64(block.Pos[1]),
+				Z: float64(block.Pos[2]),
+			},
+		}
+
+		// Set the block ID from palette
+		if p, ok := sf.Palette[block.State]; ok {
+			sb.ID = p.Name
+		}
+
+		// Handle NBT from the block itself
+		if block.Nbt != nil {
+			sb.NBT = block.Nbt
+		}
+
+		// Check if there's a tile entity at this position
+		key := [3]int{block.Pos[0], block.Pos[1], block.Pos[2]}
+		if te, ok := tileEntityMap[key]; ok {
+			sb.Type = "block_entity"
+			if idVal, ok := te.NBT["id"].(string); ok {
+				sb.ID = idVal
+			}
+			sb.NBT = te.NBT
+			delete(tileEntityMap, key) // mark as consumed
+		}
+
+		sf.Blocks = append(sf.Blocks, sb)
+	}
+
+	// Add any remaining tile entities that weren't matched to blocks
+	for _, te := range tileEntityMap {
+		if len(te.Pos) < 3 {
+			continue
+		}
+		id := "unknown"
+		if idVal, ok := te.NBT["id"].(string); ok {
+			id = idVal
+		}
+		sb := StandardBlock{
+			Type: "block_entity",
+			ID:   id,
+			Position: StandardBlockPosition{
+				X: float64(te.Pos[0]),
+				Y: float64(te.Pos[1]),
+				Z: float64(te.Pos[2]),
+			},
+			NBT: te.NBT,
+		}
+		sf.Blocks = append(sf.Blocks, sb)
 	}
 
 	// Convert entities
 	for _, entity := range create.Entities {
-		// Skip entities with invalid data
-		if len(entity.Pos) < 3 || len(entity.Nbt.Rotation) < 2 || len(entity.Nbt.Motion) < 3 {
+		if len(entity.Pos) < 3 {
 			continue
 		}
 
-		// Create a StandardBlock for the entity
 		entityBlock := StandardBlock{
 			Type: "entity",
 			ID:   entity.Nbt.ID,
@@ -586,206 +693,36 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 				Y: entity.Pos[1],
 				Z: entity.Pos[2],
 			},
-			Rotation: struct {
-				Yaw   float64 `json:"yaw,omitempty"`
-				Pitch float64 `json:"pitch,omitempty"`
-			}{
+		}
+
+		if len(entity.Nbt.Rotation) >= 2 {
+			entityBlock.Rotation = StandardRotation{
 				Yaw:   float64(entity.Nbt.Rotation[0]),
 				Pitch: float64(entity.Nbt.Rotation[1]),
-			},
-			Motion: struct {
-				X float64 `json:"x,omitempty"`
-				Y float64 `json:"y,omitempty"`
-				Z float64 `json:"z,omitempty"`
-			}{
+			}
+		}
+
+		if len(entity.Nbt.Motion) >= 3 {
+			entityBlock.Motion = StandardMotion{
 				X: float64(entity.Nbt.Motion[0]),
 				Y: float64(entity.Nbt.Motion[1]),
 				Z: float64(entity.Nbt.Motion[2]),
-			},
+			}
 		}
+
 		sf.Blocks = append(sf.Blocks, entityBlock)
 	}
 
-	// Convert tile entities that don't already have associated blocks
-	for _, tileEntity := range create.TileEntities {
-		// Skip tile entities with invalid position
-		if len(tileEntity.Pos) < 3 {
-			continue
-		}
-
-		// Extract ID from NBT data
-		id := "unknown"
-		if idVal, ok := tileEntity.NBT["id"].(string); ok {
-			id = idVal
-		}
-
-		// Check if this position already has a block
-		posX := tileEntity.Pos[0] + sf.Position.X
-		posY := tileEntity.Pos[1] + sf.Position.Y
-		posZ := tileEntity.Pos[2] + sf.Position.Z
-
-		// Check if we need to create a new block for this tile entity
-		needNewBlock := true
-		for i, block := range sf.Blocks {
-			if int(block.Position.X) == posX && int(block.Position.Y) == posY && int(block.Position.Z) == posZ {
-				// This position already has a block, just update its NBT data
-				sf.Blocks[i].Type = "block_with_tile_entity"
-				sf.Blocks[i].ID = id
-				sf.Blocks[i].NBT = tileEntity.NBT
-				needNewBlock = false
-				break
-			}
-		}
-
-		if needNewBlock {
-			// Create a new block for this tile entity
-			tileEntityBlock := StandardBlock{
-				Type: "tile_entity",
-				ID:   id,
-				Position: StandardBlockPosition{
-					X: float64(posX),
-					Y: float64(posY),
-					Z: float64(posZ),
-				},
-				NBT: tileEntity.NBT,
-			}
-			sf.Blocks = append(sf.Blocks, tileEntityBlock)
-		}
-	}
-
 	return sf, nil
-}
-
-// Helper function to find the minimum position from blocks
-func findMinPosition(blocks []CreateBlock) (minX, minY, minZ int) {
-	// Default to 0,0,0
-	minX, minY, minZ = 0, 0, 0
-
-	if len(blocks) == 0 {
-		return
-	}
-
-	// Initialize with maximum values
-	minX, minY, minZ = 1000000, 1000000, 1000000
-	foundValidPosition := false
-
-	// Find the minimum position
-	for _, block := range blocks {
-
-		// Update minimum position
-		if block.Pos[0] < minX {
-			minX = block.Pos[0]
-			foundValidPosition = true
-		}
-		if block.Pos[1] < minY {
-			minY = block.Pos[1]
-			foundValidPosition = true
-		}
-		if block.Pos[2] < minZ {
-			minZ = block.Pos[2]
-			foundValidPosition = true
-		}
-	}
-
-	// If no valid positions were found, reset to 0
-	if !foundValidPosition {
-		minX, minY, minZ = 0, 0, 0
-	}
-
-	return
-}
-
-// Helper function to convert a block to a map
-func getBlockAsMap(block interface{}) map[string]interface{} {
-	// Try direct type assertion
-	if blockMap, ok := block.(map[string]interface{}); ok {
-		return blockMap
-	}
-
-	// Try JSON conversion
-	jsonData, err := json.Marshal(block)
-	if err != nil {
-		return nil
-	}
-
-	var tempMap map[string]interface{}
-	if err := json.Unmarshal(jsonData, &tempMap); err != nil {
-		return nil
-	}
-
-	return tempMap
-}
-
-// Helper function to extract position from a block
-func extractBlockPosition(blockMap map[string]interface{}) (x, y, z int) {
-	if pos, ok := blockMap["pos"]; ok {
-		// Try as []interface{}
-		if posArray, ok := pos.([]interface{}); ok && len(posArray) >= 3 {
-			if xVal, ok := posArray[0].(float64); ok {
-				x = int(xVal)
-			}
-			if yVal, ok := posArray[1].(float64); ok {
-				y = int(yVal)
-			}
-			if zVal, ok := posArray[2].(float64); ok {
-				z = int(zVal)
-			}
-		} else if posArray, ok := pos.([]int); ok && len(posArray) >= 3 {
-			// Try as []int
-			x = posArray[0]
-			y = posArray[1]
-			z = posArray[2]
-		} else if posArray, ok := pos.([]float64); ok && len(posArray) >= 3 {
-			// Try as []float64
-			x = int(posArray[0])
-			y = int(posArray[1])
-			z = int(posArray[2])
-		}
-	}
-	return
-}
-
-// Helper function to extract state from a block
-func extractBlockState(blockMap map[string]interface{}) int {
-	var state int
-	if stateVal, ok := blockMap["state"]; ok {
-		if stateFloat, ok := stateVal.(float64); ok {
-			state = int(stateFloat)
-		} else if stateInt, ok := stateVal.(int); ok {
-			state = stateInt
-		}
-	}
-	return state
-}
-
-// Helper function to extract NBT data from a block
-func extractBlockNBT(blockMap map[string]interface{}) interface{} {
-	if nbt, ok := blockMap["nbt"]; ok {
-		if nbtMap, ok := nbt.(map[string]interface{}); ok {
-			return nbtMap
-		}
-
-		// Try JSON conversion
-		jsonData, err := json.Marshal(nbt)
-		if err == nil {
-			var tempMap map[string]interface{}
-			if err := json.Unmarshal(jsonData, &tempMap); err == nil {
-				return tempMap
-			}
-		}
-	}
-	return nil
 }
 
 // convertStandardToLitematica converts a StandardFormat to LitematicaNBT
 func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, error) {
 	litematica := &LitematicaNBT{}
 
-	// Set version information
 	litematica.MinecraftDataVersion = standard.DataVersion
 	litematica.Version = standard.Version
 
-	// Set metadata
 	litematica.Metadata.Name = standard.Metadata.Name
 	litematica.Metadata.Author = standard.Metadata.Author
 	litematica.Metadata.Description = standard.Metadata.Description
@@ -799,10 +736,8 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 	litematica.Metadata.EnclosingSize.Z = standard.Size.Z
 	litematica.Metadata.RegionCount = 1
 
-	// Create a region
 	region := LitematicaRegion{}
 
-	// Set region size and position
 	region.Size.X = standard.Size.X
 	region.Size.Y = standard.Size.Y
 	region.Size.Z = standard.Size.Z
@@ -813,74 +748,92 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 	// Convert palette
 	region.BlockStatePalette = make([]LitematicaBlockStatePalette, len(standard.Palette))
 	for i, palette := range standard.Palette {
-		region.BlockStatePalette[i].Name = palette.Name
-		region.BlockStatePalette[i].Properties = palette.Properties
-	}
-
-	// Convert blocks to BlockStates array
-	// Create a 3D grid to represent the blocks
-	grid := make([][][]int, region.Size.X)
-	for x := range grid {
-		grid[x] = make([][]int, region.Size.Y)
-		for y := range grid[x] {
-			grid[x][y] = make([]int, region.Size.Z)
-			// Initialize with air (palette index 0)
-			for z := range grid[x][y] {
-				grid[x][y][z] = 0
-			}
+		region.BlockStatePalette[i] = LitematicaBlockStatePalette{
+			Name:       palette.Name,
+			Properties: palette.Properties,
 		}
 	}
 
-	// Fill the grid with block data
-	for _, block := range standard.Blocks {
-		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
+	// Build a 3D grid of palette indices from standard blocks
+	sizeX := standard.Size.X
+	sizeY := standard.Size.Y
+	sizeZ := standard.Size.Z
+	totalVolume := sizeX * sizeY * sizeZ
 
-		// Skip blocks outside the region bounds
-		if x < 0 || int(x) >= region.Size.X || y < 0 || int(y) >= region.Size.Y || z < 0 || int(z) >= region.Size.Z {
+	grid := make([]int, totalVolume)
+	var tileEntities []LitematicaTileEntity
+	var entities []LitematicaEntity
+
+	for _, block := range standard.Blocks {
+		if block.Type == "entity" {
+			e := LitematicaEntity{
+				ID:       block.ID,
+				Pos:      []float64{block.Position.X, block.Position.Y, block.Position.Z},
+				Rotation: []float64{block.Rotation.Yaw, block.Rotation.Pitch},
+				Motion:   []float64{block.Motion.X, block.Motion.Y, block.Motion.Z},
+			}
+			entities = append(entities, e)
 			continue
 		}
 
-		// Set the palette index for this position
-		grid[x][y][z] = block.State
-	}
+		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
+		if x < 0 || x >= sizeX || y < 0 || y >= sizeY || z < 0 || z >= sizeZ {
+			continue
+		}
 
-	// Convert the 3D grid to a 1D array
-	// Litematica uses XZY order
-	blockStates := make([]interface{}, region.Size.X*region.Size.Y*region.Size.Z)
-	index := 0
-	for x := 0; x < region.Size.X; x++ {
-		for z := 0; z < region.Size.Z; z++ {
-			for y := 0; y < region.Size.Y; y++ {
-				// Get the palette index for this position
-				paletteIndex := grid[x][y][z]
+		// YZX order for the flat grid
+		idx := y*sizeZ*sizeX + z*sizeX + x
+		if idx >= 0 && idx < totalVolume {
+			grid[idx] = block.State
+		}
 
-				// Set the value in the BlockStates array
-				if index < len(blockStates) {
-					blockStates[index] = paletteIndex
-				}
-
-				index++
+		// Collect tile entities
+		if block.Type == "block_entity" && block.NBT != nil {
+			te := LitematicaTileEntity{
+				Id: block.ID,
+				X:  x,
+				Y:  y,
+				Z:  z,
 			}
+			tileEntities = append(tileEntities, te)
 		}
 	}
 
-	// Set the BlockStates
-	region.BlockStates = blockStates
-
-	// Convert entities
-	region.Entities = make([]LitematicaEntity, len(standard.Blocks))
-	for i, entity := range standard.Blocks {
-		region.Entities[i].ID = entity.ID
-		region.Entities[i].Pos = []float64{entity.Position.X, entity.Position.Y, entity.Position.Z}
-		region.Entities[i].Rotation = []float64{entity.Rotation.Yaw, entity.Rotation.Pitch}
-		region.Entities[i].Motion = []float64{entity.Motion.X, entity.Motion.Y, entity.Motion.Z}
+	// Pack palette indices into int64 long array
+	// Entries do NOT cross long boundaries in Litematica
+	paletteSize := len(region.BlockStatePalette)
+	bitsPerEntry := 2 // minimum
+	if paletteSize > 0 {
+		b := bits.Len(uint(paletteSize - 1))
+		if b > bitsPerEntry {
+			bitsPerEntry = b
+		}
 	}
 
-	// We skip litematica tile entities when converting from standard
+	entriesPerLong := 64 / bitsPerEntry
+	numLongs := (totalVolume + entriesPerLong - 1) / entriesPerLong
+	mask := int64((1 << bitsPerEntry) - 1)
 
-	// Set the region
-	litematica.Regions = make(map[string]LitematicaRegion)
-	litematica.Regions["main"] = region
+	packedLongs := make([]int64, numLongs)
+
+	// Pack in YZX order (same order as the grid)
+	for i := 0; i < totalVolume; i++ {
+		longIndex := i / entriesPerLong
+		bitOffset := (i % entriesPerLong) * bitsPerEntry
+		state := int64(grid[i]) & mask
+		packedLongs[longIndex] |= state << bitOffset
+	}
+
+	// Convert to []interface{} for the BlockStates field
+	region.BlockStates = make([]interface{}, len(packedLongs))
+	for i, v := range packedLongs {
+		region.BlockStates[i] = v
+	}
+
+	region.TileEntities = tileEntities
+	region.Entities = entities
+
+	litematica.Regions = map[string]LitematicaRegion{"main": region}
 
 	return litematica, nil
 }
@@ -889,27 +842,22 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error) {
 	worldEdit := &WorldEditNBT{}
 
-	// Set version information
 	worldEdit.DataVersion = standard.DataVersion
 	worldEdit.Version = standard.Version
 
-	// Set size
 	worldEdit.Width = standard.Size.X
 	worldEdit.Height = standard.Size.Y
 	worldEdit.Length = standard.Size.Z
 
-	// Set offset
 	worldEdit.Offset = []int{standard.Position.X, standard.Position.Y, standard.Position.Z}
 
-	// Set metadata
 	worldEdit.Metadata.WEOffsetX = standard.Position.X
 	worldEdit.Metadata.WEOffsetY = standard.Position.Y
 	worldEdit.Metadata.WEOffsetZ = standard.Position.Z
 
-	// Convert palette
+	// Convert palette — WorldEdit uses "name[props]" → index
 	worldEdit.Palette = make(map[string]int)
 	for i, palette := range standard.Palette {
-		// In WorldEdit, the block name might include properties in the format "minecraft:block[property1=value1,property2=value2]"
 		blockName := palette.Name
 		if len(palette.Properties) > 0 {
 			blockName += "["
@@ -927,126 +875,142 @@ func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error)
 	}
 	worldEdit.PaletteMax = len(standard.Palette)
 
-	// Convert blocks to BlockData
-	// Create a 3D grid to represent the blocks
-	grid := make([][][]int, worldEdit.Width)
-	for x := range grid {
-		grid[x] = make([][]int, worldEdit.Height)
-		for y := range grid[x] {
-			grid[x][y] = make([]int, worldEdit.Length)
-			// Initialize with air (palette index 0)
-			for z := range grid[x][y] {
-				grid[x][y][z] = 0
-			}
-		}
-	}
+	// Build a 3D grid of palette indices
+	totalVolume := worldEdit.Width * worldEdit.Height * worldEdit.Length
+	grid := make([]int, totalVolume)
 
-	// Fill the grid with block data
+	var blockEntities []map[string]any
+
 	for _, block := range standard.Blocks {
-		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
+		if block.Type == "entity" {
+			continue
+		}
 
-		// Skip blocks outside the schematic bounds
+		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
 		if x < 0 || x >= worldEdit.Width || y < 0 || y >= worldEdit.Height || z < 0 || z >= worldEdit.Length {
 			continue
 		}
 
-		// Set the palette index for this position
-		grid[x][y][z] = block.State
-	}
-
-	// Convert the 3D grid to a 1D array in YZX order
-	blockData := make([]byte, worldEdit.Width*worldEdit.Height*worldEdit.Length)
-	index := 0
-	for y := 0; y < worldEdit.Height; y++ {
-		for z := 0; z < worldEdit.Length; z++ {
-			for x := 0; x < worldEdit.Width; x++ {
-				// Get the palette index for this position
-				paletteIndex := grid[x][y][z]
-
-				// Set the value in the BlockData array
-				// In a real implementation, you would need to properly encode the BlockData
-				if index < len(blockData) {
-					blockData[index] = byte(paletteIndex)
-				}
-
-				index++
-			}
+		idx := y*worldEdit.Length*worldEdit.Width + z*worldEdit.Width + x
+		if idx >= 0 && idx < totalVolume {
+			grid[idx] = block.State
 		}
-	}
 
-	// TODO figure out if this is the right way to Set the BlockData
-	worldEdit.BlockData = string(blockData)
-
-	// Convert block entities
-	worldEdit.BlockEntities = make([]map[string]any, len(standard.Blocks))
-	for i, tileEntity := range standard.Blocks {
-		worldEdit.BlockEntities[i] = make(map[string]any)
-		worldEdit.BlockEntities[i]["id"] = tileEntity.ID
-		worldEdit.BlockEntities[i]["x"] = tileEntity.Position.X
-		worldEdit.BlockEntities[i]["y"] = tileEntity.Position.Y
-		worldEdit.BlockEntities[i]["z"] = tileEntity.Position.Z
-		if tileEntity.NBT != nil {
-			// Add NBT data if available
-			if nbtMap, ok := tileEntity.NBT.(map[string]interface{}); ok {
+		// Collect block entities
+		if block.Type == "block_entity" {
+			be := map[string]any{
+				"Id": block.ID,
+				"Pos": []int{
+					int(block.Position.X),
+					int(block.Position.Y),
+					int(block.Position.Z),
+				},
+			}
+			if nbtMap, ok := block.NBT.(map[string]interface{}); ok {
 				for key, value := range nbtMap {
-					worldEdit.BlockEntities[i][key] = value
+					be[key] = value
 				}
 			}
+			blockEntities = append(blockEntities, be)
 		}
 	}
+
+	// Encode block data as varint byte array in YZX order
+	var blockData []byte
+	for i := 0; i < totalVolume; i++ {
+		blockData = append(blockData, writeVarint(grid[i])...)
+	}
+	worldEdit.BlockData = blockData
+	worldEdit.BlockEntities = blockEntities
 
 	return worldEdit, nil
 }
 
-// convertStandardToCreate converts a StandardFormat to CreateNBT
+// writeVarint encodes an integer as a varint byte sequence
+func writeVarint(value int) []byte {
+	var buf []byte
+	uval := uint32(value)
+	for {
+		b := byte(uval & 0x7F)
+		uval >>= 7
+		if uval != 0 {
+			b |= 0x80
+		}
+		buf = append(buf, b)
+		if uval == 0 {
+			break
+		}
+	}
+	return buf
+}
+
+// convertStandardToCreate converts a StandardFormat to CreateNBT (vanilla structure format)
 func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 	create := &CreateNBT{}
 
-	// Set version information
 	create.DataVersion = standard.DataVersion
-
-	// Set size
 	create.Size = []int{standard.Size.X, standard.Size.Y, standard.Size.Z}
 
-	// Convert palette
+	// Convert palette — Properties is now map[string]string
 	create.Palette = make([]CreatePalette, len(standard.Palette))
 	for i, palette := range standard.Palette {
-		create.Palette[i].Name = palette.Name
-		// This is a simplified example; in a real implementation,
-		// you would need to handle all possible properties
-		if axis, ok := palette.Properties["axis"]; ok {
-			create.Palette[i].Properties.Axis = axis
+		props := palette.Properties
+		if props == nil {
+			props = make(map[string]string)
+		}
+		create.Palette[i] = CreatePalette{
+			Name:       palette.Name,
+			Properties: props,
 		}
 	}
 
-	// Convert blocks from standard format to Create format
-	create.Blocks = make([]CreateBlock, len(standard.Blocks))
+	// Convert blocks
+	var blocks []CreateBlock
+	var entities []CreateEntity
+	var tileEntities []CreateTileEntity
 
-	// Iterate through the standard blocks and convert them to Create blocks
-	for i, block := range standard.Blocks {
-		// Create a map for each block
-		blockMap := CreateBlock{}
-
-		// Set position, preserving the original position
-		blockMap.Pos = []int{
-			int(block.Position.X) - standard.Position.X, // Adjust X position
-			int(block.Position.Y) - standard.Position.Y, // Adjust Y position
-			int(block.Position.Z) - standard.Position.Z, // Adjust Z position
+	for _, block := range standard.Blocks {
+		if block.Type == "entity" {
+			e := CreateEntity{
+				Pos: []float64{block.Position.X, block.Position.Y, block.Position.Z},
+				Nbt: CreateEntityNbt{
+					ID: block.ID,
+				},
+			}
+			if block.Rotation.Yaw != 0 || block.Rotation.Pitch != 0 {
+				e.Nbt.Rotation = []int{int(block.Rotation.Yaw), int(block.Rotation.Pitch)}
+			}
+			if block.Motion.X != 0 || block.Motion.Y != 0 || block.Motion.Z != 0 {
+				e.Nbt.Motion = []int{int(block.Motion.X), int(block.Motion.Y), int(block.Motion.Z)}
+			}
+			entities = append(entities, e)
+			continue
 		}
 
-		// Set state (palette index)
-		blockMap.State = block.State
-
-		// Add NBT data if available
-		if block.NBT != nil {
-			blockMap.Nbt = block.NBT
+		cb := CreateBlock{
+			Pos:   []int{int(block.Position.X), int(block.Position.Y), int(block.Position.Z)},
+			State: block.State,
+			Nbt:   block.NBT,
 		}
+		blocks = append(blocks, cb)
 
-		// Add the block to the list
-		create.Blocks[i] = blockMap
+		// Collect tile entities
+		if block.Type == "block_entity" && block.NBT != nil {
+			te := CreateTileEntity{
+				Pos: []int{int(block.Position.X), int(block.Position.Y), int(block.Position.Z)},
+			}
+			if nbtMap, ok := block.NBT.(map[string]interface{}); ok {
+				te.NBT = nbtMap
+			} else {
+				te.NBT = map[string]interface{}{"id": block.ID}
+			}
+			tileEntities = append(tileEntities, te)
+		}
 	}
 
-	// Skip entities and tile entities when converting to world edit
+	create.Blocks = blocks
+	create.Entities = entities
+	create.TileEntities = tileEntities
 
 	return create, nil
 }

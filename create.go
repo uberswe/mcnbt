@@ -63,15 +63,10 @@ type CreateEntity struct {
 	Pos      []float64       `json:"pos"`
 }
 
-// CreateBlockProperty represents the properties of a block in a Create schematic
-type CreateBlockProperty struct {
-	Axis string `json:"axis"`
-}
-
-// CreatePalette represents a block in the palette of a Create schematic
+// CreatePalette represents a block in the palette of a Create/Vanilla structure
 type CreatePalette struct {
-	Name       string              `json:"Name"`
-	Properties CreateBlockProperty `json:"Properties,omitempty"`
+	Name       string            `json:"Name"`
+	Properties map[string]string `json:"Properties,omitempty"`
 }
 
 // CreateTileEntity represents a tile entity in a Create schematic
