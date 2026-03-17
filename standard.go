@@ -32,6 +32,9 @@ type StandardFormat struct {
 
 	// Original format type
 	OriginalFormat string `json:"originalFormat"`
+
+	// Extra format-specific data that should be preserved during round-trips
+	Extra map[string]interface{} `json:"extra,omitempty"`
 }
 
 type StandardMetadata struct {
@@ -584,14 +587,20 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 
 	sf := &StandardFormat{
 		OriginalFormat: "create",
-		DataVersion:    create.DataVersion,
+		DataVersion:    int(create.DataVersion),
+		Extra:          make(map[string]interface{}),
+	}
+
+	// Preserve mod-specific data versions
+	if create.RailwaysDataVersion != 0 {
+		sf.Extra["Railways_DataVersion"] = create.RailwaysDataVersion
 	}
 
 	// Set size
 	if len(create.Size) >= 3 {
-		sf.Size.X = create.Size[0]
-		sf.Size.Y = create.Size[1]
-		sf.Size.Z = create.Size[2]
+		sf.Size.X = int(create.Size[0])
+		sf.Size.Y = int(create.Size[1])
+		sf.Size.Z = int(create.Size[2])
 	}
 
 	// Convert palette — Properties is now map[string]string
@@ -608,10 +617,10 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 	}
 
 	// Build a map of tile entity positions for merging
-	tileEntityMap := make(map[[3]int]CreateTileEntity)
+	tileEntityMap := make(map[[3]int32]CreateTileEntity)
 	for _, te := range create.TileEntities {
 		if len(te.Pos) >= 3 {
-			key := [3]int{te.Pos[0], te.Pos[1], te.Pos[2]}
+			key := [3]int32{te.Pos[0], te.Pos[1], te.Pos[2]}
 			tileEntityMap[key] = te
 		}
 	}
@@ -625,7 +634,7 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 
 		sb := StandardBlock{
 			Type:  "block",
-			State: block.State,
+			State: int(block.State),
 			Position: StandardBlockPosition{
 				X: float64(block.Pos[0]),
 				Y: float64(block.Pos[1]),
@@ -634,7 +643,7 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 		}
 
 		// Set the block ID from palette
-		if p, ok := sf.Palette[block.State]; ok {
+		if p, ok := sf.Palette[int(block.State)]; ok {
 			sb.ID = p.Name
 		}
 
@@ -644,7 +653,7 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 		}
 
 		// Check if there's a tile entity at this position
-		key := [3]int{block.Pos[0], block.Pos[1], block.Pos[2]}
+		key := [3]int32{block.Pos[0], block.Pos[1], block.Pos[2]}
 		if te, ok := tileEntityMap[key]; ok {
 			sb.Type = "block_entity"
 			if idVal, ok := te.NBT["id"].(string); ok {
@@ -948,8 +957,20 @@ func writeVarint(value int) []byte {
 func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 	create := &CreateNBT{}
 
-	create.DataVersion = standard.DataVersion
-	create.Size = []int{standard.Size.X, standard.Size.Y, standard.Size.Z}
+	create.DataVersion = int32(standard.DataVersion)
+	create.Size = []int32{int32(standard.Size.X), int32(standard.Size.Y), int32(standard.Size.Z)}
+
+	// Restore mod-specific data versions
+	if v, ok := standard.Extra["Railways_DataVersion"]; ok {
+		switch val := v.(type) {
+		case int32:
+			create.RailwaysDataVersion = val
+		case int:
+			create.RailwaysDataVersion = int32(val)
+		case int64:
+			create.RailwaysDataVersion = int32(val)
+		}
+	}
 
 	// Convert palette — Properties is now map[string]string
 	create.Palette = make([]CreatePalette, len(standard.Palette))
@@ -978,18 +999,18 @@ func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 				},
 			}
 			if block.Rotation.Yaw != 0 || block.Rotation.Pitch != 0 {
-				e.Nbt.Rotation = []int{int(block.Rotation.Yaw), int(block.Rotation.Pitch)}
+				e.Nbt.Rotation = []float32{float32(block.Rotation.Yaw), float32(block.Rotation.Pitch)}
 			}
 			if block.Motion.X != 0 || block.Motion.Y != 0 || block.Motion.Z != 0 {
-				e.Nbt.Motion = []int{int(block.Motion.X), int(block.Motion.Y), int(block.Motion.Z)}
+				e.Nbt.Motion = []float64{block.Motion.X, block.Motion.Y, block.Motion.Z}
 			}
 			entities = append(entities, e)
 			continue
 		}
 
 		cb := CreateBlock{
-			Pos:   []int{int(block.Position.X), int(block.Position.Y), int(block.Position.Z)},
-			State: block.State,
+			Pos:   []int32{int32(block.Position.X), int32(block.Position.Y), int32(block.Position.Z)},
+			State: int32(block.State),
 			Nbt:   block.NBT,
 		}
 		blocks = append(blocks, cb)
@@ -997,7 +1018,7 @@ func convertStandardToCreate(standard *StandardFormat) (*CreateNBT, error) {
 		// Collect tile entities
 		if block.Type == "block_entity" && block.NBT != nil {
 			te := CreateTileEntity{
-				Pos: []int{int(block.Position.X), int(block.Position.Y), int(block.Position.Z)},
+				Pos: []int32{int32(block.Position.X), int32(block.Position.Y), int32(block.Position.Z)},
 			}
 			if nbtMap, ok := block.NBT.(map[string]interface{}); ok {
 				te.NBT = nbtMap
