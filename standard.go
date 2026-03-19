@@ -231,8 +231,8 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 
 	sf := &StandardFormat{
 		OriginalFormat: "litematica",
-		DataVersion:    litematica.MinecraftDataVersion,
-		Version:        litematica.Version,
+		DataVersion:    int(litematica.MinecraftDataVersion),
+		Version:        int(litematica.Version),
 	}
 
 	// Set metadata
@@ -241,9 +241,16 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	sf.Metadata.Description = litematica.Metadata.Description
 	sf.Metadata.TimeCreated = litematica.Metadata.TimeCreated
 	sf.Metadata.TimeModified = litematica.Metadata.TimeModified
-	sf.Metadata.TotalBlocks = litematica.Metadata.TotalBlocks
-	sf.Metadata.TotalVolume = litematica.Metadata.TotalVolume
-	sf.Metadata.PreviewImageData = litematica.Metadata.PreviewImageData
+	sf.Metadata.TotalBlocks = int(litematica.Metadata.TotalBlocks)
+	sf.Metadata.TotalVolume = int(litematica.Metadata.TotalVolume)
+
+	// Convert []int32 preview image data to []int
+	if litematica.Metadata.PreviewImageData != nil {
+		sf.Metadata.PreviewImageData = make([]int, len(litematica.Metadata.PreviewImageData))
+		for i, v := range litematica.Metadata.PreviewImageData {
+			sf.Metadata.PreviewImageData[i] = int(v)
+		}
+	}
 
 	if len(litematica.Regions) == 0 {
 		return nil, fmt.Errorf("no regions found in litematica file")
@@ -257,17 +264,17 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	}
 
 	// Handle negative sizes (Litematica uses negative sizes to indicate direction)
-	sizeX := abs(region.Size.X)
-	sizeY := abs(region.Size.Y)
-	sizeZ := abs(region.Size.Z)
+	sizeX := abs(int(region.Size.X))
+	sizeY := abs(int(region.Size.Y))
+	sizeZ := abs(int(region.Size.Z))
 
 	sf.Size.X = sizeX
 	sf.Size.Y = sizeY
 	sf.Size.Z = sizeZ
 
-	sf.Position.X = region.Position.X
-	sf.Position.Y = region.Position.Y
-	sf.Position.Z = region.Position.Z
+	sf.Position.X = int(region.Position.X)
+	sf.Position.Y = int(region.Position.Y)
+	sf.Position.Z = int(region.Position.Z)
 
 	// Convert palette
 	sf.Palette = make(map[int]StandardPalette, len(region.BlockStatePalette))
@@ -295,20 +302,8 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 		}
 	}
 
-	// Convert BlockStates from []interface{} to []int64
-	longs := make([]int64, len(region.BlockStates))
-	for i, v := range region.BlockStates {
-		switch val := v.(type) {
-		case int64:
-			longs[i] = val
-		case float64:
-			longs[i] = int64(val)
-		case int:
-			longs[i] = int64(val)
-		case int32:
-			longs[i] = int64(val)
-		}
-	}
+	// BlockStates is now directly []int64
+	longs := region.BlockStates
 
 	// Unpack palette indices from the long array
 	// Litematica: entries do NOT cross long boundaries
@@ -328,7 +323,7 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 	// Build a map of tile entity positions for merging
 	tileEntityMap := make(map[[3]int]LitematicaTileEntity)
 	for _, te := range region.TileEntities {
-		key := [3]int{te.X, te.Y, te.Z}
+		key := [3]int{int(te.X), int(te.Y), int(te.Z)}
 		tileEntityMap[key] = te
 	}
 
@@ -363,9 +358,9 @@ func convertLitematicaToStandard(litematica *LitematicaNBT) (*StandardFormat, er
 					// Build NBT from tile entity fields
 					nbtData := make(map[string]interface{})
 					nbtData["id"] = te.Id
-					nbtData["x"] = te.X
-					nbtData["y"] = te.Y
-					nbtData["z"] = te.Z
+					nbtData["x"] = int(te.X)
+					nbtData["y"] = int(te.Y)
+					nbtData["z"] = int(te.Z)
 					if len(te.Items) > 0 {
 						nbtData["Items"] = te.Items
 					}
@@ -401,20 +396,24 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 		return nil, fmt.Errorf("worldEdit data is nil")
 	}
 
+	width := int(worldEdit.Width)
+	height := int(worldEdit.Height)
+	length := int(worldEdit.Length)
+
 	sf := &StandardFormat{
 		OriginalFormat: "worldedit",
-		DataVersion:    worldEdit.DataVersion,
-		Version:        worldEdit.Version,
+		DataVersion:    int(worldEdit.DataVersion),
+		Version:        int(worldEdit.Version),
 	}
 
-	sf.Size.X = worldEdit.Width
-	sf.Size.Y = worldEdit.Height
-	sf.Size.Z = worldEdit.Length
+	sf.Size.X = width
+	sf.Size.Y = height
+	sf.Size.Z = length
 
 	if len(worldEdit.Offset) >= 3 {
-		sf.Position.X = worldEdit.Offset[0]
-		sf.Position.Y = worldEdit.Offset[1]
-		sf.Position.Z = worldEdit.Offset[2]
+		sf.Position.X = int(worldEdit.Offset[0])
+		sf.Position.Y = int(worldEdit.Offset[1])
+		sf.Position.Z = int(worldEdit.Offset[2])
 	}
 
 	// Convert palette — WorldEdit palette maps "name[props]" → index
@@ -422,7 +421,7 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 	sf.Palette = make(map[int]StandardPalette, len(worldEdit.Palette))
 	for name, paletteIndex := range worldEdit.Palette {
 		blockName, properties := parseWorldEditBlockName(name)
-		sf.Palette[paletteIndex] = StandardPalette{
+		sf.Palette[int(paletteIndex)] = StandardPalette{
 			Name:       blockName,
 			Properties: properties,
 		}
@@ -430,7 +429,7 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 
 	// Decode the varint-encoded BlockData byte array
 	// WorldEdit BlockData is a varint-encoded stream iterated in YZX order
-	totalVolume := worldEdit.Width * worldEdit.Height * worldEdit.Length
+	totalVolume := width * height * length
 	paletteIndices := make([]int, 0, totalVolume)
 
 	blockDataBytes := worldEdit.BlockData
@@ -455,9 +454,9 @@ func convertWorldEditToStandard(worldEdit *WorldEditNBT) (*StandardFormat, error
 	// Convert YZX-ordered indices to blocks with positions
 	sf.Blocks = make([]StandardBlock, 0, totalVolume)
 	idx := 0
-	for y := 0; y < worldEdit.Height; y++ {
-		for z := 0; z < worldEdit.Length; z++ {
-			for x := 0; x < worldEdit.Width; x++ {
+	for y := 0; y < height; y++ {
+		for z := 0; z < length; z++ {
+			for x := 0; x < width; x++ {
 				if idx >= len(paletteIndices) {
 					break
 				}
@@ -729,30 +728,38 @@ func convertCreateToStandard(create *CreateNBT) (*StandardFormat, error) {
 func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, error) {
 	litematica := &LitematicaNBT{}
 
-	litematica.MinecraftDataVersion = standard.DataVersion
-	litematica.Version = standard.Version
+	litematica.MinecraftDataVersion = int32(standard.DataVersion)
+	litematica.Version = int32(standard.Version)
 
 	litematica.Metadata.Name = standard.Metadata.Name
 	litematica.Metadata.Author = standard.Metadata.Author
 	litematica.Metadata.Description = standard.Metadata.Description
 	litematica.Metadata.TimeCreated = standard.Metadata.TimeCreated
 	litematica.Metadata.TimeModified = standard.Metadata.TimeModified
-	litematica.Metadata.TotalBlocks = standard.Metadata.TotalBlocks
-	litematica.Metadata.TotalVolume = standard.Metadata.TotalVolume
-	litematica.Metadata.PreviewImageData = standard.Metadata.PreviewImageData
-	litematica.Metadata.EnclosingSize.X = standard.Size.X
-	litematica.Metadata.EnclosingSize.Y = standard.Size.Y
-	litematica.Metadata.EnclosingSize.Z = standard.Size.Z
+	litematica.Metadata.TotalBlocks = int32(standard.Metadata.TotalBlocks)
+	litematica.Metadata.TotalVolume = int32(standard.Metadata.TotalVolume)
+
+	// Convert []int preview image data to []int32
+	if standard.Metadata.PreviewImageData != nil {
+		litematica.Metadata.PreviewImageData = make([]int32, len(standard.Metadata.PreviewImageData))
+		for i, v := range standard.Metadata.PreviewImageData {
+			litematica.Metadata.PreviewImageData[i] = int32(v)
+		}
+	}
+
+	litematica.Metadata.EnclosingSize.X = int32(standard.Size.X)
+	litematica.Metadata.EnclosingSize.Y = int32(standard.Size.Y)
+	litematica.Metadata.EnclosingSize.Z = int32(standard.Size.Z)
 	litematica.Metadata.RegionCount = 1
 
 	region := LitematicaRegion{}
 
-	region.Size.X = standard.Size.X
-	region.Size.Y = standard.Size.Y
-	region.Size.Z = standard.Size.Z
-	region.Position.X = standard.Position.X
-	region.Position.Y = standard.Position.Y
-	region.Position.Z = standard.Position.Z
+	region.Size.X = int32(standard.Size.X)
+	region.Size.Y = int32(standard.Size.Y)
+	region.Size.Z = int32(standard.Size.Z)
+	region.Position.X = int32(standard.Position.X)
+	region.Position.Y = int32(standard.Position.Y)
+	region.Position.Z = int32(standard.Position.Z)
 
 	// Convert palette
 	region.BlockStatePalette = make([]LitematicaBlockStatePalette, len(standard.Palette))
@@ -778,7 +785,7 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 			e := LitematicaEntity{
 				ID:       block.ID,
 				Pos:      []float64{block.Position.X, block.Position.Y, block.Position.Z},
-				Rotation: []float64{block.Rotation.Yaw, block.Rotation.Pitch},
+				Rotation: []float32{float32(block.Rotation.Yaw), float32(block.Rotation.Pitch)},
 				Motion:   []float64{block.Motion.X, block.Motion.Y, block.Motion.Z},
 			}
 			entities = append(entities, e)
@@ -800,9 +807,9 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 		if block.Type == "block_entity" && block.NBT != nil {
 			te := LitematicaTileEntity{
 				Id: block.ID,
-				X:  x,
-				Y:  y,
-				Z:  z,
+				X:  int32(x),
+				Y:  int32(y),
+				Z:  int32(z),
 			}
 			tileEntities = append(tileEntities, te)
 		}
@@ -833,11 +840,8 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 		packedLongs[longIndex] |= state << bitOffset
 	}
 
-	// Convert to []interface{} for the BlockStates field
-	region.BlockStates = make([]interface{}, len(packedLongs))
-	for i, v := range packedLongs {
-		region.BlockStates[i] = v
-	}
+	// BlockStates is now directly []int64
+	region.BlockStates = packedLongs
 
 	region.TileEntities = tileEntities
 	region.Entities = entities
@@ -851,21 +855,25 @@ func convertStandardToLitematica(standard *StandardFormat) (*LitematicaNBT, erro
 func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error) {
 	worldEdit := &WorldEditNBT{}
 
-	worldEdit.DataVersion = standard.DataVersion
-	worldEdit.Version = standard.Version
+	worldEdit.DataVersion = int32(standard.DataVersion)
+	worldEdit.Version = int32(standard.Version)
 
-	worldEdit.Width = standard.Size.X
-	worldEdit.Height = standard.Size.Y
-	worldEdit.Length = standard.Size.Z
+	worldEdit.Width = int16(standard.Size.X)
+	worldEdit.Height = int16(standard.Size.Y)
+	worldEdit.Length = int16(standard.Size.Z)
 
-	worldEdit.Offset = []int{standard.Position.X, standard.Position.Y, standard.Position.Z}
+	worldEdit.Offset = []int32{int32(standard.Position.X), int32(standard.Position.Y), int32(standard.Position.Z)}
 
-	worldEdit.Metadata.WEOffsetX = standard.Position.X
-	worldEdit.Metadata.WEOffsetY = standard.Position.Y
-	worldEdit.Metadata.WEOffsetZ = standard.Position.Z
+	worldEdit.Metadata.WEOffsetX = int32(standard.Position.X)
+	worldEdit.Metadata.WEOffsetY = int32(standard.Position.Y)
+	worldEdit.Metadata.WEOffsetZ = int32(standard.Position.Z)
+
+	width := standard.Size.X
+	height := standard.Size.Y
+	length := standard.Size.Z
 
 	// Convert palette — WorldEdit uses "name[props]" → index
-	worldEdit.Palette = make(map[string]int)
+	worldEdit.Palette = make(map[string]int32)
 	for i, palette := range standard.Palette {
 		blockName := palette.Name
 		if len(palette.Properties) > 0 {
@@ -880,12 +888,12 @@ func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error)
 			}
 			blockName += "]"
 		}
-		worldEdit.Palette[blockName] = i
+		worldEdit.Palette[blockName] = int32(i)
 	}
-	worldEdit.PaletteMax = len(standard.Palette)
+	worldEdit.PaletteMax = int32(len(standard.Palette))
 
 	// Build a 3D grid of palette indices
-	totalVolume := worldEdit.Width * worldEdit.Height * worldEdit.Length
+	totalVolume := width * height * length
 	grid := make([]int, totalVolume)
 
 	var blockEntities []map[string]any
@@ -896,11 +904,11 @@ func convertStandardToWorldEdit(standard *StandardFormat) (*WorldEditNBT, error)
 		}
 
 		x, y, z := int(block.Position.X), int(block.Position.Y), int(block.Position.Z)
-		if x < 0 || x >= worldEdit.Width || y < 0 || y >= worldEdit.Height || z < 0 || z >= worldEdit.Length {
+		if x < 0 || x >= width || y < 0 || y >= height || z < 0 || z >= length {
 			continue
 		}
 
-		idx := y*worldEdit.Length*worldEdit.Width + z*worldEdit.Width + x
+		idx := y*length*width + z*width + x
 		if idx >= 0 && idx < totalVolume {
 			grid[idx] = block.State
 		}
